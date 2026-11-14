@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """pitwall-quota [now]: CodexBar's usage JSON on stdin → two lines: a tmux-styled status segment, then plain text.
 
-Each provider reads `claude 7% 5h · 34% wk`. A number turns white at 50%, amber at 80%, red at 95%. A window at
-80% or more adds the time to its reset (`↻ 3h`), and a weekly pace that runs out before the reset adds `⚠ 2d`.
+Each provider reads `claude 5h 7% ↻3h · wk 34% ↻5d`: each window's use and the time left to its reset. A number
+turns white at 50%, amber at 80%, red at 95%; a weekly use on course to run out before its reset is amber too.
 """
 import json
 import sys
@@ -45,23 +45,19 @@ def main():
         if not windows:
             continue
         name = p.get("provider", "?")
+        short = ((p.get("pace") or {}).get("secondary") or {}).get("willLastToReset") is False
         s_parts, p_parts = [], []
         for w, unit in windows:
             pct = round(w["usedPercent"])
-            s_parts.append(f"#[fg={colour(pct)}]{pct}%#[fg={DIM}] {unit}")
-            p_parts.append(f"{pct}% {unit}")
+            tint = colour(pct)
+            if unit == "wk" and short and tint in (MUTED, TEXT):
+                tint = AMBER  # on course to run out before the reset
+            left = until(w.get("resetsAt"), now)
+            reset = f" ↻{span(left)}" if left is not None else ""
+            s_parts.append(f"#[fg={DIM}]{unit} #[fg={tint}]{pct}%#[fg={DIM}]{reset}")
+            p_parts.append(f"{unit} {pct}%{reset}")
         s_text = f"#[fg={DIM}]{name} " + f"#[fg={DIM}] · ".join(s_parts)
         p_text = f"{name} " + " · ".join(p_parts)
-
-        hot = max(windows, key=lambda wu: wu[0]["usedPercent"])[0]
-        left = until(hot.get("resetsAt"), now)
-        if hot["usedPercent"] >= 80 and left is not None:
-            s_text += f" #[fg={AMBER}]↻ {span(left)}"
-            p_text += f" ↻ {span(left)}"
-        pace = (p.get("pace") or {}).get("secondary") or {}
-        if pace.get("willLastToReset") is False and pace.get("etaSeconds"):
-            s_text += f" #[fg={AMBER}]⚠ {span(pace['etaSeconds'])}"
-            p_text += f" ⚠ {span(pace['etaSeconds'])}"
         styled.append(s_text)
         plain.append(p_text)
     if plain:

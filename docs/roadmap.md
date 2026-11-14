@@ -14,13 +14,14 @@ Where pitwall goes next, and the rules it keeps on the way.
 
 - **Restore.** The hook keeps one record per agent session; after tmux dies, `prefix R` or `pitwall restore` rebuilds sessions, windows and panes and resumes each agent.
 - **Lanes as worktrees.** `pitwall new` and `pitwall done`, on [gwm](https://github.com/kbrdn1/gwm) and [lumen](https://github.com/jnsahaj/lumen).
+- **Needs you, beyond the terminal.** `lane.state` signals to [OpenTimeline](https://github.com/mateonunez/opentimeline) through a system seat, with the lane's metrics; the credential renews itself.
 - **Context on every lane.** Model, context and tokens from each agent's transcript; [CodexBar](https://github.com/steipete/CodexBar) usage limits in the status line.
 
 ## Next
 
 | Step | Ships | Done when |
 | --- | --- | --- |
-| **Needs you, beyond the terminal** | `lane.state` signals to [OpenTimeline](https://github.com/mateonunez/opentimeline) through a system seat: `asking` needs attention, `asking` for ten minutes is urgent, with the lane's metrics as attributes. Its bell comes back as a count in the status line | A lane waiting for you shows up where you are, not only in tmux |
+| **Urgent after a while, and the bell** | A lane `asking` for ten minutes escalates to `urgent`; Needs you's count comes back to the status line (it needs a person's credential, not the seat's) | Nothing waits for you unnoticed |
 | **Metrics over time** | A small per-session ledger (turns, tokens, time asking versus working) so `pitwall stats --today` answers where the day went | You see which lanes cost the most and which waited on you the longest |
 | **A board you can filter** | `/` filters lanes as you type; the reason a lane is asking shows on its row | Fifteen lanes stay as quick as four |
 | **A skill for agents** | `skills/pitwall/SKILL.md`, so an orchestrator learns `pitwall ls`, refs and `peek` | An agent reads the fleet and asks before acting |

@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mateonunez/pitwall/actions/workflows/ci.yml"><img src="https://github.com/mateonunez/pitwall/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/mateonunez/pitwall/actions/workflows/main.yml"><img src="https://github.com/mateonunez/pitwall/actions/workflows/main.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/tmux-3.2+-f59e0b.svg" alt="tmux 3.2+">
 </p>
@@ -51,8 +51,9 @@ Restart your agents so they pick up the hooks; Codex asks you to trust each new 
 - **Several agents in one window.** Each pane is its own lane (`ait.1`, `ait.2`); the window shows the most urgent of them.
 - **Names that mean something.** A window running Claude Code shows up as `2.1.323`; I name it after the agent's directory instead.
 - **Your agents survive a dead tmux.** Every agent session leaves a small record as it works. When the tmux server dies, the status line says `↺ 4` next time, and `prefix R` (or `pitwall restore` from any terminal) rebuilds the sessions, windows and panes and resumes each agent where it was. An agent you closed on purpose stays closed.
-- **Context on every lane.** The board's preview names the model, how full the context is and how many tokens the session has used, read from the agent's own transcript; `pitwall stats` prints it for all lanes. Your Claude and Codex usage limits sit in the status line (`claude 6% 34%w`), from [CodexBar](https://github.com/steipete/CodexBar), refreshed when a turn ends.
+- **Context on every lane.** The board's preview names the model, how full the context is and how many tokens the session has used, read from the agent's own transcript; `pitwall stats` prints it for all lanes. Your Claude and Codex usage limits sit in the status line with the time left to each reset (`claude 5h 8% ↻4h · wk 34% ↻5d`), from [CodexBar](https://github.com/steipete/CodexBar), refreshed when a turn ends. A number turns amber at 80%, and so does a week on course to run out before its reset.
 - **Lanes as worktrees.** `pitwall new fix-login` makes a worktree with [gwm](https://github.com/kbrdn1/gwm), opens a window there and starts your agent. `pitwall done @3` shows the diff in [lumen](https://github.com/jnsahaj/lumen), and removes the worktree only if you say so.
+- **Needs you, beyond the terminal.** Connect an [OpenTimeline](https://github.com/mateonunez/opentimeline) system seat with `pitwall ot connect <token-file>` and a lane that starts asking shows up in its Needs you, then clears when the lane moves on. Signals carry the state, the agent and its metrics, never prompts or task titles.
 - **Made for agents as well.** `pitwall ls` prints one line per lane with a ref (`@1 lab/opentimeline asking 3m codex Cut the 0.2.0 release`), `--json` for scripts, and `pitwall peek @1` shows that lane's last lines. An orchestrator reads your whole fleet with one call.
 
 ## Keys and commands
@@ -75,6 +76,7 @@ Restart your agents so they pick up the hooks; Codex asks you to trust each new 
 | `pitwall saved` | The lanes pitwall can bring back, and which are running or closed |
 | `pitwall restore [--dry\|--all]` | Reopen them, resuming each agent |
 | `pitwall forget <id>` | Drop a saved lane |
+| `pitwall ot connect <token> [--url URL]` | Send lane states to OpenTimeline; also `status`, `flush`, `disconnect` |
 | `pitwall new <name> [--agent codex]` | Worktree, window and agent in one go |
 | `pitwall done @N` | Review the diff, then remove the worktree if you confirm |
 | `pitwall install [--write]` | The hook lines for Claude Code and Codex |
@@ -117,11 +119,13 @@ The hook runs on every tool call next to whatever else you have hooked, so it st
 
 ## What's next
 
-OpenTimeline signals, so a lane waiting for you reaches you outside tmux; a board you can filter by typing; a skill so agents learn to read the fleet. The reasoning is in [docs/roadmap.md](docs/roadmap.md).
+Metrics over time, a board you can filter by typing, and a skill so agents learn to read the fleet. The reasoning is in [docs/roadmap.md](docs/roadmap.md).
 
 ## Develop
 
-`test/run.sh` runs every check on a throwaway tmux server and never touches yours. [AGENTS.md](AGENTS.md) has the rules for changing me.
+`test/run.sh` runs every check on a throwaway tmux server and never touches yours: its config, state and OpenTimeline connection are temporary. [AGENTS.md](AGENTS.md) has the rules for changing me.
+
+Releases follow [Conventional Commits](https://www.conventionalcommits.org): release-please keeps a release PR open on `main` with the next version and the changelog, and merging it tags the release. `pitwall --version` prints what you run.
 
 ## License
 

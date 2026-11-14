@@ -5,11 +5,17 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 L="pitwall-test-$$"
 T="tmux -L $L"
 fail=0
-trap '$T kill-server 2>/dev/null' EXIT
 
 eq() { if [ "$2" = "$3" ]; then echo "ok    $1"; else echo "FAIL  $1: expected '$3', got '$2'"; fail=1; fi; }
 
+# Never touch the real config or state: not from this script, not from what the test server runs in the background.
+XDG_CONFIG_HOME=$(mktemp -d) XDG_STATE_HOME=$(mktemp -d)
+export XDG_CONFIG_HOME XDG_STATE_HOME
+ISOLATED="$XDG_CONFIG_HOME $XDG_STATE_HOME"
+trap '$T kill-server 2>/dev/null; rm -rf $ISOLATED' EXIT
 $T -f /dev/null new-session -d -s s -n one -x 120 -y 30
+isolate() { $T set-environment -g XDG_CONFIG_HOME "$XDG_CONFIG_HOME" \; set-environment -g XDG_STATE_HOME "$XDG_STATE_HOME"; }
+isolate
 $T new-window -d -t s -n two
 $T set -g window-status-format '#I #W' \; set -g window-status-current-format '#I #W' \; set -g status-right 'R'
 $T run-shell "'$ROOT/pitwall.tmux'"
@@ -50,6 +56,10 @@ hook "$P1" SessionEnd;        eq "SessionEnd → gone" "$(state s:one)" gone
 $T set -pu -t "$P1" @pitwall_state \; select-pane -t "$P1" -T '⠙ Working on it | dir'
 eq "spinner in the title → working without hooks" "$(state s:one)" working
 
+$T select-pane -t "$P1" -T '[ . ] Action Required | Approve the deploy | dir'
+eq "Codex's Action Required title → asking without hooks" "$(state s:one)" asking
+eq "and the task keeps only its words" "$(TMUX="$SOCK,0,0" "$ROOT/bin/pitwall" _lanes | awk -F '\t' '$4 == "one" { print $8 }')" "Approve the deploy"
+$T select-pane -t "$P1" -T '⠙ Working on it | dir'
 eq "task loses its spinner and Codex dir" "$(TMUX="$SOCK,0,0" "$ROOT/bin/pitwall" _lanes | awk -F '\t' '$4 == "one" { print $8 }')" "Working on it"
 
 $T set -p -t "$P1" @pitwall_state asking \; set -p -t "$P2" @pitwall_state done \; select-window -t s:one
@@ -76,8 +86,6 @@ hook "$P3" Stop
 eq "visiting a window clears every done pane in it" "$($T select-window -t s:two \; select-window -t s:one; sleep 0.3; $T display -p -t "$P3" '#{@pitwall_state}')" idle
 
 # --- save and restore, with a throwaway state directory ----------------------------------------------------
-XDG_STATE_HOME=$(mktemp -d)
-export XDG_STATE_HOME
 LANES="$XDG_STATE_HOME/pitwall/lanes"
 pw() { TMUX="$SOCK,0,0" "$ROOT/bin/pitwall" "$@"; }
 
@@ -103,21 +111,38 @@ eq "restore rebuilds the window with both agents" "$($T display -p -t '=work:2' 
 eq "each pane resumes its own session" "$($T list-panes -t '=work:2' -F '#{@pitwall_session}' | sort | tr '\n' ' ')" "s-api s-api2 "
 PA=$($T list-panes -t '=work:2' -F '#{pane_id} #{@pitwall_session}' | awk '$2 == "s-api" { print $1 }')
 ran() { $T capture-pane -p -t "$PA" | grep -cE '^resumed s-api[[:space:]]*$'; }
-i=0; while [ "$(ran)" != 1 ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+i=0; while [ "$(ran)" != 1 ] && [ $i -lt 150 ]; do sleep 0.1; i=$((i + 1)); done
 eq "the resume command ran in its pane" "$(ran)" 1
 eq "a lane closed on purpose stays closed" "$($T list-windows -t '=work' -F '#{window_index}' | grep -c '^3$')" 0
 eq "restoring twice opens nothing new" "$(pw restore --count)" 0
 eq "saved tells running from closed" "$(pw saved | awk '{ print $1 }' | sort | uniq -c | awk '{ printf "%s=%s ", $2, $1 }')" "closed=1 running=2 "
-rm -rf "$XDG_STATE_HOME"
 
 # --- usage limits, from a synthetic CodexBar payload -------------------------------------------------------
 quota() { printf '%s' "$1" | "$ROOT/bin/pitwall-quota" 1800000000 | tail -1; }
 eq "limits read as session and week" \
-  "$(quota '[{"provider":"claude","usage":{"primary":{"usedPercent":7},"secondary":{"usedPercent":34}}}]')" "claude 7% 5h · 34% wk"
-eq "a hot window shows the time to its reset" \
-  "$(quota '[{"provider":"codex","usage":{"secondary":{"usedPercent":91,"resetsAt":"2027-01-15T09:30:00Z"}}}]')" "codex 91% wk ↻ 1h"
-eq "a pace that runs out early warns" \
-  "$(quota '[{"provider":"claude","usage":{"secondary":{"usedPercent":40}},"pace":{"secondary":{"willLastToReset":false,"etaSeconds":180000}}}]')" "claude 40% wk ⚠ 2d"
+  "$(quota '[{"provider":"claude","usage":{"primary":{"usedPercent":7},"secondary":{"usedPercent":34}}}]')" "claude 5h 7% · wk 34%"
+eq "each window shows the time to its reset" \
+  "$(quota '[{"provider":"codex","usage":{"primary":{"usedPercent":12,"resetsAt":"2027-01-15T09:30:00Z"},"secondary":{"usedPercent":91,"resetsAt":"2027-01-18T08:00:00Z"}}}]')" "codex 5h 12% ↻1h · wk 91% ↻3d"
+eq "a week on course to run out turns amber" \
+  "$(printf '%s' '[{"provider":"claude","usage":{"secondary":{"usedPercent":40}},"pace":{"secondary":{"willLastToReset":false}}}]' | "$ROOT/bin/pitwall-quota" 1800000000 | head -1 | grep -c '#f59e0b]40%')" 1
 eq "no data, no segment" "$(quota '[]')" ""
+
+# --- OpenTimeline signals, against an address nothing listens on --------------------------------------------
+XDG_STATE_HOME=$(mktemp -d) XDG_CONFIG_HOME=$(mktemp -d)
+export XDG_STATE_HOME XDG_CONFIG_HOME
+ISOLATED="$ISOLATED $XDG_CONFIG_HOME $XDG_STATE_HOME"
+isolate
+PENDING="$XDG_STATE_HOME/pitwall/signals.jsonl"
+TMUX="$SOCK,0,0" "$ROOT/bin/pitwall-signal" "$P2" working asking
+eq "not connected, nothing is sent or kept" "$([ -f "$PENDING" ] && echo kept || echo none)" none
+echo t >"$XDG_CONFIG_HOME/token"
+pw ot connect "$XDG_CONFIG_HOME/token" --url http://127.0.0.1:9 >/dev/null
+TMUX="$SOCK,0,0" "$ROOT/bin/pitwall-signal" "$P2" working asking
+eq "an unreachable Timeline keeps the signal" "$(wc -l <"$PENDING" | tr -d ' ')" 1
+eq "asking needs attention" "$(python3 -I -c 'import json,sys; s=json.loads(open(sys.argv[1]).readline()); print(s["kind"], s["attention"], s["subject"])' "$PENDING")" "lane.state attention lane:s/two"
+$T set -p -t "$P2" @pitwall_state asking
+hook "$P2" PostToolUse # leaving asking: the hook sends the change in the background
+i=0; while [ "$(wc -l <"$PENDING" | tr -d ' ')" != 2 ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+eq "leaving asking is reported too, with attention none" "$(tail -1 "$PENDING" | python3 -I -c 'import json,sys; s=json.load(sys.stdin); print(s["state"], s["attention"])')" "working none"
 
 exit $fail

@@ -16,8 +16,9 @@ KEY_RESTORE=$(opt @pitwall-key-restore 'R')
 AGENT='^(codex|claude|[0-9.]+)$' # Claude Code shows up as its version, e.g. 2.1.323
 
 # A lane is a pane running an agent; a window can hold several. A pane's state: the hook's word when there is
-# one, else read from the pane title (Codex prefixes a braille spinner while it works, Claude a star glyph, ✳ at rest).
-tmux set -g @pitwall-state-fmt "#{?#{@pitwall_state},#{@pitwall_state},#{?#{m/r:^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷],#{pane_title}},working,#{?#{m/r:$AGENT,#{pane_current_command}},#{?#{m/r:^[✶✻✽✢·*],#{pane_title}},working,idle},}}}"
+# one, else read from the pane title: Codex writes "[ ! ] Action Required" while it waits for you and prefixes a braille
+# spinner while it works; Claude prefixes a star glyph, ✳ at rest.
+tmux set -g @pitwall-state-fmt "#{?#{@pitwall_state},#{@pitwall_state},#{?#{m:*Action Required*,#{pane_title}},asking,#{?#{m/r:^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷],#{pane_title}},working,#{?#{m/r:$AGENT,#{pane_current_command}},#{?#{m/r:^[✶✻✽✢·*],#{pane_title}},working,idle},}}}}"
 
 S='#{E:@pitwall-state-fmt}'
 # A window shows its most urgent pane: asking, then done, working, idle, gone.

@@ -110,6 +110,10 @@ done
 tmux "$@" >/dev/null 2>&1
 
 bin=$(cd "$(dirname "$0")" && pwd)
+# OpenTimeline, when connected: a lane entering or leaving asking, done or gone becomes a signal, sent in the background.
+if [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/pitwall/opentimeline" ]; then
+  case " $current $state " in *" asking "* | *" done "* | *" gone "*) tmux run-shell -b "'$bin/pitwall-signal' '$TMUX_PANE' '$current' '$state'" >/dev/null 2>&1 ;; esac
+fi
 # The spinner animates only while something works; the ticker exits on its own afterwards.
 [ "$state" = working ] && tmux run-shell -b "'$bin/pitwall-tick'" >/dev/null 2>&1
 # Quotas refresh when a turn ends and they are older than ten minutes: no polling.

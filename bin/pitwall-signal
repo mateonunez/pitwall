@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""pitwall-signal <pane> <old-state> <new-state>: report a lane's state change to OpenTimeline as a `lane.state` signal.
+
+The hook runs it in the background, only when a lane enters or leaves `asking`, `done` or `gone`. `asking` needs the
+responsible person's attention; any later state is sent with attention `none`, which closes the Needs you condition.
+Signals carry the state, the agent and its metrics, never prompts, task titles or transcripts.
+
+Configured by `pitwall ot connect` in ~/.config/pitwall/opentimeline (two lines: API URL, token file). The token is a
+system seat's credential (read and signal only); it is renewed in place when the server opens its renewal window.
+A signal that cannot be delivered waits in ~/.local/state/pitwall/signals.jsonl and goes out with the next one.
+"""
+import json
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+import uuid
+from datetime import datetime, timezone
+
+CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "pitwall", "opentimeline")
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "pitwall")
+PENDING = os.path.join(STATE, "signals.jsonl")
+BIN = os.path.dirname(os.path.realpath(__file__))
+
+
+def config():
+    with open(CONFIG) as f:
+        url, token_file = [line.strip() for line in f.read().splitlines()[:2]]
+    return url.rstrip("/"), os.path.realpath(os.path.expanduser(token_file))
+
+
+def call(url, path, token, method="GET", body=None):
+    data = json.dumps(body).encode() if body is not None else None
+    request = urllib.request.Request(f"{url}{path}", data=data, method=method, headers={
+        "authorization": f"Bearer {token}", "content-type": "application/json"})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return response.status, json.loads(response.read() or b"null")
+
+
+def token_for(url, token_file):
+    """The current token, renewed first when the server says the renewal window is open. Failures keep it."""
+    with open(token_file) as f:
+        token = f.read().strip()
+    try:
+        _, me = call(url, "/v1/me", token)
+        opens = ((me or {}).get("credential") or {}).get("renewAfter")
+        if opens and datetime.now(timezone.utc) >= datetime.fromisoformat(opens.replace("Z", "+00:00")):
+            _, renewed = call(url, "/v1/me/credential", token, method="POST")
+            if renewed and renewed.get("token"):
+                tmp = f"{token_file}.{os.getpid()}.renewing"
+                with open(tmp, "w") as f:
+                    f.write(renewed["token"] + "\n")
+                os.chmod(tmp, 0o600)
+                os.replace(tmp, token_file)
+                token = renewed["token"]
+    except (OSError, ValueError, urllib.error.URLError):
+        pass
+    return token
+
+
+def tmux(fmt, pane):
+    return subprocess.run(["tmux", "display", "-p", "-t", pane, fmt], capture_output=True, text=True).stdout.rstrip("\n")
+
+
+def signal(pane, old, new):
+    fields = tmux("#{session_name}\t#{window_name}#{?#{>:#{window_panes},1},.#{pane_index},}\t#{@pitwall_harness}\t"
+                  "#{@pitwall_transcript}\t#{@pitwall_session}", pane).split("\t")
+    session, window, harness, transcript, sid = (fields + [""] * 5)[:5]
+    lane = f"{session}/{window}"
+    subject = "lane:" + "".join(c if c.isalnum() or c in "._/-" else "-" for c in lane)
+    attributes = {"harness": harness or "unknown"}
+    stats = subprocess.run([os.path.join(BIN, "pitwall-stats"), harness, transcript, sid], capture_output=True, text=True)
+    model, pct, ctx, total = (stats.stdout.rstrip("\n").split("\t") + [""] * 4)[:4]
+    if model:
+        attributes["model"] = model
+    if pct:
+        attributes["context_percent"] = int(pct)
+    if total:
+        attributes["tokens"] = int(total)
+    now = datetime.now(timezone.utc)
+    return {
+        "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"pitwall:{subject}:{new}:{now.timestamp():.3f}")),
+        "kind": "lane.state",
+        "subject": subject,
+        "state": new,
+        "attention": "attention" if new == "asking" else "none",
+        "summary": f"{lane}: {old or 'new'} → {new}"[:280],
+        "occurredAt": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "attributes": attributes,
+    }
+
+
+def status():
+    try:
+        url, token_file = config()
+    except (OSError, ValueError):
+        print("opentimeline: not connected (pitwall ot connect <token-file> [--url URL])")
+        return 1
+    pending = sum(1 for _ in open(PENDING)) if os.path.exists(PENDING) else 0
+    try:
+        _, me = call(url, "/v1/me", token_for(url, token_file))
+        actor, credential = (me or {}).get("actor") or {}, (me or {}).get("credential") or {}
+        print(f"opentimeline: {url} as {actor.get('name', '?')} ({actor.get('kind', '?')}), "
+              f"credential until {credential.get('expiresAt', '?')}, {pending} pending")
+        return 0
+    except (OSError, ValueError, urllib.error.URLError) as error:
+        print(f"opentimeline: {url} unreachable or refused ({error}), {pending} pending")
+        return 1
+
+
+def main():
+    if sys.argv[1:2] == ["--status"]:
+        sys.exit(status())
+    try:
+        url, token_file = config()
+    except (OSError, ValueError):
+        return  # not connected: nothing to do
+    batch = []
+    if os.path.exists(PENDING):
+        with open(PENDING) as f:
+            batch = [json.loads(line) for line in f if line.strip()][-49:]
+    if len(sys.argv) == 4:
+        batch.append(signal(*sys.argv[1:4]))
+    if not batch:
+        return
+    try:
+        code, _ = call(url, "/v1/signals", token_for(url, token_file), method="POST", body={"signals": batch})
+        delivered = code == 201
+    except urllib.error.HTTPError as error:
+        delivered = 400 <= error.code < 500 and error.code != 429  # refused for good: do not keep retrying it
+    except (OSError, ValueError, urllib.error.URLError):
+        delivered = False
+    os.makedirs(STATE, exist_ok=True)
+    if delivered:
+        if os.path.exists(PENDING):
+            os.remove(PENDING)
+    else:
+        with open(PENDING, "w") as f:
+            f.writelines(json.dumps(s) + "\n" for s in batch)
+
+
+if __name__ == "__main__":
+    main()

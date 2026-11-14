@@ -1,0 +1,17 @@
+name: Pull request
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    # Release PRs only touch the version and the changelog; main checks their merge before tagging.
+    if: ${{ !startsWith(github.head_ref, 'release-please--') }}
+    uses: ./.github/workflows/checks.yml

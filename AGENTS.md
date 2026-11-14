@@ -15,7 +15,11 @@ Read [README.md](README.md) for the product and [CONTEXT.md](CONTEXT.md) for its
 
 ## Trust boundaries
 
-pitwall reads window options and pane titles and captures panes only for the board's preview. It never sends keys to an agent's pane. `pitwall restore` types a resume command only into a pane it just created or a plain shell. `pitwall done` removes a worktree only after an explicit `y`. `pitwall install` changes harness settings only with `--write`, keeps a backup beside each file and adds nothing that is already there.
+pitwall reads window options and pane titles and captures panes only for the board's preview. The only network call is `bin/pitwall-signal`, in the background, when the user connected OpenTimeline; it sends states and metrics, never prompts, task titles or transcripts. It never sends keys to an agent's pane. `pitwall restore` types a resume command only into a pane it just created or a plain shell. `pitwall done` removes a worktree only after an explicit `y`. `pitwall install` changes harness settings only with `--write`, keeps a backup beside each file and adds nothing that is already there.
+
+## Commits and releases
+
+Commits are Conventional Commits, subject only. While pitwall is 0.x, `feat` bumps the minor and `fix` the patch. Never edit `version.txt`, `CHANGELOG.md` or `.release-please-manifest.json` by hand: release-please owns them through its release PR.
 
 ## Commands
 

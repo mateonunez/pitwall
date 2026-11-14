@@ -24,9 +24,11 @@ pitwall: see and steer coding agents from tmux
   pitwall forget <id>       drop a saved lane (a session id or its first characters)
   pitwall new <name> [--agent claude|codex]   a worktree (gwm), a window there and an agent in it
   pitwall done @N           review the lane's diff (lumen), then remove its worktree if you say so
+  pitwall ot connect <token> [--url URL]      send lane states to OpenTimeline (status, flush, disconnect)
   pitwall install [--write] show (or add) the hook lines for Claude Code and Codex
   pitwall doctor            what is missing; exits 1 when something is
   pitwall demo [stop]       a throwaway tmux server with fake lanes, to look at pitwall
+  pitwall --version         the installed version
 EOF
 }
 
@@ -38,7 +40,8 @@ lanes() {
   tmux list-panes -a -F "#{E:@pitwall-state-fmt}	#{session_name}	#{window_name}#{?#{>:#{window_panes},1},.#{pane_index},}	#{pane_id}	#{@pitwall_since}	#{?#{@pitwall_harness},#{@pitwall_harness},#{?#{==:#{pane_current_command},codex},codex,#{?#{m/r:^(claude|[0-9.]+)$,#{pane_current_command}},claude,}}}	#{pane_title}	#{@pitwall_transcript}	#{@pitwall_session}" |
     awk -F '\t' 'BEGIN { OFS = "\t"; split("asking done working idle gone", o, " "); for (i in o) rank[o[i]] = i }
       $1 != "" {
-        t = $7; if (t ~ /^[^A-Za-z0-9]+ /) sub(/^[^ ]+ /, "", t)  # spinner or ✳ in front of the task
+        t = $7; sub(/^\[ [^]]* \] Action Required \| /, "", t)  # Codex waiting for you (it blinks "[ ! ]" / "[ . ]")
+        if (t ~ /^[^A-Za-z0-9]+ /) sub(/^[^ ]+ /, "", t)           # spinner or ✳ in front of the task
         sub(/ \| [^|]*$/, "", t); $7 = t                         # Codex appends " | <dir>"
         print rank[$1], $0
       }' |
@@ -123,6 +126,28 @@ cmd_quota() {
     IFS= read -r plain
     [ -n "$plain" ] && tmux set -g @pitwall_quota "$fmt" \; set -g @pitwall_quota_plain "$plain"
   }
+}
+
+# --- OpenTimeline ------------------------------------------------------------------------------------------
+
+# ot connect <token-file> [--url URL] | status | flush | disconnect. The token is a system seat's credential.
+cmd_ot() {
+  conf=${XDG_CONFIG_HOME:-$HOME/.config}/pitwall/opentimeline
+  case ${1:-status} in
+    connect)
+      file=${2:?usage: pitwall ot connect <token-file> [--url URL]}
+      [ -f "$file" ] || { echo "pitwall: no token file at $file" >&2; exit 1; }
+      url=http://127.0.0.1:4431
+      [ "${3:-}" = --url ] && url=${4:?usage: pitwall ot connect <token-file> --url URL}
+      mkdir -p "$(dirname "$conf")"
+      printf '%s\n%s\n' "$url" "$(cd "$(dirname "$file")" && pwd)/$(basename "$file")" >"$conf"
+      "$DIR/bin/pitwall-signal" --status
+      ;;
+    status) "$DIR/bin/pitwall-signal" --status ;;
+    flush) "$DIR/bin/pitwall-signal" ;;
+    disconnect) rm -f "$conf" && echo "opentimeline: disconnected" ;;
+    *) echo "usage: pitwall ot connect <token-file> [--url URL] | status | flush | disconnect" >&2; exit 1 ;;
+  esac
 }
 
 # --- save and restore --------------------------------------------------------------------------------------
@@ -377,9 +402,11 @@ case ${1:-} in
   new) shift; cmd_new "$@" ;;
   done) shift; cmd_done "$@" ;;
   _done) shift; cmd__done "$@" ;;
+  ot) shift; cmd_ot "$@" ;;
   install) shift; cmd_install "${1:-}" ;;
   doctor) cmd_doctor ;;
   demo) shift; cmd_demo "${1:-}" ;;
+  -v | --version | version) cat "$DIR/version.txt" ;;
   -h | --help | help | "") usage ;;
   *) echo "pitwall: unknown command $1" >&2; usage >&2; exit 1 ;;
 esac
