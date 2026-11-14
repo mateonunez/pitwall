@@ -110,9 +110,11 @@ sleep 0.5
 eq "restore rebuilds the window with both agents" "$($T display -p -t '=work:2' '#{window_name} #{window_panes}')" "api 2"
 eq "each pane resumes its own session" "$($T list-panes -t '=work:2' -F '#{@pitwall_session}' | sort | tr '\n' ' ')" "s-api s-api2 "
 PA=$($T list-panes -t '=work:2' -F '#{pane_id} #{@pitwall_session}' | awk '$2 == "s-api" { print $1 }')
-ran() { $T capture-pane -p -t "$PA" | grep -cE '^resumed s-api[[:space:]]*$'; }
-i=0; while [ "$(ran)" != 1 ] && [ $i -lt 150 ]; do sleep 0.1; i=$((i + 1)); done
-eq "the resume command ran in its pane" "$(ran)" 1
+# The resume command reaches its own pane (typed into a fresh shell, so the line itself is the evidence).
+ran() { $T capture-pane -p -J -t "$PA" | grep -qE 'echo resumed s-api[[:space:]]*$' && echo yes || echo no; }
+i=0; while [ "$(ran)" != yes ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+eq "the resume command reached its pane" "$(ran)" yes
+[ "$(ran)" = yes ] || { echo "      pane $PA shows:"; $T capture-pane -p -J -t "$PA" | sed 's/^/      | /'; }
 eq "a lane closed on purpose stays closed" "$($T list-windows -t '=work' -F '#{window_index}' | grep -c '^3$')" 0
 eq "restoring twice opens nothing new" "$(pw restore --count)" 0
 eq "saved tells running from closed" "$(pw saved | awk '{ print $1 }' | sort | uniq -c | awk '{ printf "%s=%s ", $2, $1 }')" "closed=1 running=2 "
