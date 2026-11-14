@@ -2,8 +2,11 @@
 # pitwall: see and steer coding agents from tmux.
 set -eu
 
-DIR=$(cd "$(dirname "$0")/.." && pwd)
+# Resolve a symlink (~/.local/bin/pitwall → the checkout), so pitwall can live on your PATH.
+DIR=$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)
 HOOK="$DIR/bin/pitwall-hook"
+STATE=${XDG_STATE_HOME:-$HOME/.local/state}/pitwall
+TAB=$(printf '\t')
 
 usage() {
   cat <<'EOF'
@@ -14,6 +17,13 @@ pitwall: see and steer coding agents from tmux
   pitwall go @N             jump to a lane
   pitwall next              jump to the next lane that is asking or done (cycles)
   pitwall board             the board (prefix A opens it in a popup)
+  pitwall stats [@N]        model, context and tokens per lane, from the agents' transcripts
+  pitwall quota [--refresh] Claude and Codex usage limits, from CodexBar
+  pitwall saved             the lanes pitwall can bring back after tmux dies
+  pitwall restore [--dry]   reopen them: the session, window and pane, resuming each agent
+  pitwall forget <id>       drop a saved lane (a session id or its first characters)
+  pitwall new <name> [--agent claude|codex]   a worktree (gwm), a window there and an agent in it
+  pitwall done @N           review the lane's diff (lumen), then remove its worktree if you say so
   pitwall install [--write] show (or add) the hook lines for Claude Code and Codex
   pitwall doctor            what is missing; exits 1 when something is
   pitwall demo [stop]       a throwaway tmux server with fake lanes, to look at pitwall
@@ -21,11 +31,11 @@ EOF
 }
 
 # One row per lane (a pane running an agent), tab-separated, ordered by what needs you:
-# rank state session window pane-id since harness title. A window with several panes names them window.N.
+# rank state session window pane-id since harness title transcript session-id. A window with several panes names them window.N.
 lanes() {
   fmt=$(tmux show -gqv @pitwall-state-fmt)
   [ -n "$fmt" ] || { echo "pitwall: not loaded in this tmux server (run pitwall.tmux)" >&2; exit 1; }
-  tmux list-panes -a -F "#{E:@pitwall-state-fmt}	#{session_name}	#{window_name}#{?#{>:#{window_panes},1},.#{pane_index},}	#{pane_id}	#{@pitwall_since}	#{?#{@pitwall_harness},#{@pitwall_harness},#{?#{==:#{pane_current_command},codex},codex,#{?#{m/r:^(claude|[0-9.]+)$,#{pane_current_command}},claude,}}}	#{pane_title}" |
+  tmux list-panes -a -F "#{E:@pitwall-state-fmt}	#{session_name}	#{window_name}#{?#{>:#{window_panes},1},.#{pane_index},}	#{pane_id}	#{@pitwall_since}	#{?#{@pitwall_harness},#{@pitwall_harness},#{?#{==:#{pane_current_command},codex},codex,#{?#{m/r:^(claude|[0-9.]+)$,#{pane_current_command}},claude,}}}	#{pane_title}	#{@pitwall_transcript}	#{@pitwall_session}" |
     awk -F '\t' 'BEGIN { OFS = "\t"; split("asking done working idle gone", o, " "); for (i in o) rank[o[i]] = i }
       $1 != "" {
         t = $7; if (t ~ /^[^A-Za-z0-9]+ /) sub(/^[^ ]+ /, "", t)  # spinner or ✳ in front of the task
@@ -86,6 +96,165 @@ cmd_next() {
   id=$(next_id)
   if [ "${1:-}" = --dry ]; then echo "$id"; return; fi
   if [ -n "$id" ]; then jump "$id"; else tmux display-message "pitwall: nothing else needs you"; fi
+}
+
+# --- metrics -----------------------------------------------------------------------------------------------
+
+# stats [@N]: model, context use and tokens for each lane (or one), read from the transcript each hook recorded.
+cmd_stats() {
+  rows=$(lanes)
+  [ -n "${1:-}" ] && rows=$(printf '%s\n' "$rows" | awk -v n="${1#@}" 'NR == n')
+  US=$(printf '\037') # not a tab: `read` merges consecutive tabs, so an empty field would shift the rest
+  printf '%s\n' "$rows" | awk 'NF' | tr '\t' '\037' | while IFS="$US" read -r _ state session window _ _ harness _ transcript sid; do
+    printf '%s\t%s\t%s\t%s\n' "$session/$window" "$state" "$harness" "$("$DIR/bin/pitwall-stats" "$harness" "$transcript" "$sid")"
+  done | awk -F '\t' 'BEGIN { printf "%-22s %-8s %-7s %-22s %6s %9s %9s\n", "LANE", "STATE", "AGENT", "MODEL", "CTX", "TOKENS", "OUT" }
+    { printf "%-22s %-8s %-7s %-22s %6s %9s %9s\n", $1, $2, $3, ($4 == "" ? "—" : $4), ($5 == "" ? "—" : $5 "%"), ($8 == "" ? "—" : $8), ($9 == "" ? "—" : $9) }'
+}
+
+# quota [--refresh]: CodexBar's usage limits, rendered once into @pitwall_quota for the status line and the board.
+cmd_quota() {
+  bar=$(tmux show -gqv @pitwall-codexbar 2>/dev/null)
+  bar=${bar:-/Applications/CodexBar.app/Contents/Helpers/CodexBarCLI}
+  if [ "${1:-}" != --refresh ]; then tmux show -gqv @pitwall_quota_plain 2>/dev/null; return; fi
+  [ -x "$bar" ] || return 0
+  tmux set -g @pitwall_quota_at "$(date +%s)" # claim the refresh first, so lanes finishing together run it once
+  "$bar" usage --format json --provider both 2>/dev/null | "$DIR/bin/pitwall-quota" | {
+    IFS= read -r fmt
+    IFS= read -r plain
+    [ -n "$plain" ] && tmux set -g @pitwall_quota "$fmt" \; set -g @pitwall_quota_plain "$plain"
+  }
+}
+
+# --- save and restore --------------------------------------------------------------------------------------
+
+# Saved lanes, newest record per pane position, as: harness sid cwd session window-index window pane server updated.
+records() {
+  [ -d "$STATE/lanes" ] || return 0
+  find "$STATE/lanes" -type f -mtime +14 -delete 2>/dev/null # two weeks is long enough to come back for
+  cat "$STATE/lanes"/* 2>/dev/null | awk 'NF' | sort -t "$TAB" -k9,9nr |
+    awk -F '\t' '!seen[$4 FS $5 FS $7]++' | sort -t "$TAB" -k4,4 -k5,5n -k7,7n
+}
+
+server_pid() { tmux display -p '#{pid}' 2>/dev/null || echo none; }
+
+# A record is restorable when its tmux server is gone. On the same server, a lane without its agent was closed
+# on purpose, so it stays closed unless you ask with --all.
+cmd_saved() {
+  server=$(server_pid)
+  running=$(tmux list-panes -a -F '#{@pitwall_session}' 2>/dev/null || true)
+  now=$(date +%s)
+  records | while IFS="$TAB" read -r harness sid cwd sname widx wname pidx rserver updated; do
+    if printf '%s\n' "$running" | grep -qx "$sid"; then status=running
+    elif [ "$rserver" = "$server" ]; then status=closed
+    else status=restorable; fi
+    printf '%-10s %-24s %-7s %5s  %s  %s\n' "$status" "$sname:$widx.$pidx $wname" "$harness" \
+      "$(awk -v d=$((now - updated)) 'BEGIN { print (d < 3600 ? int(d / 60) "m" : d < 86400 ? int(d / 3600) "h" : int(d / 86400) "d") }')" \
+      "$(printf %.8s "$sid")" "$(printf '%s' "$cwd" | sed "s|^$HOME|~|")"
+  done
+}
+
+resume_cmd() { # resume_cmd <harness> <sid>
+  tpl=$(tmux show -gqv "@pitwall-resume-$1" 2>/dev/null)
+  case $1 in claude) tpl=${tpl:-claude --resume \{id\}} ;; codex) tpl=${tpl:-codex resume \{id\}} ;; *) return 1 ;; esac
+  printf '%s' "$tpl" | sed "s/{id}/$2/g"
+}
+
+is_shell() { case $1 in zsh | -zsh | bash | -bash | fish | sh | -sh | login) return 0 ;; *) return 1 ;; esac; }
+
+cmd_restore() {
+  mode=${1:-}
+  server=$(server_pid)
+  running=$(tmux list-panes -a -F '#{@pitwall_session}' 2>/dev/null || true)
+  plan=$(records | while IFS="$TAB" read -r harness sid cwd sname widx wname pidx rserver updated; do
+    printf '%s\n' "$running" | grep -qx "$sid" && continue
+    [ "$rserver" = "$server" ] && [ "$mode" != --all ] && continue
+    printf '%s\n' "$harness$TAB$sid$TAB$cwd$TAB$sname$TAB$widx$TAB$wname$TAB$pidx"
+  done)
+  count=$(printf '%s' "$plan" | awk 'NF' | wc -l | tr -d ' ')
+  if [ "$mode" = --count ]; then echo "$count"; return; fi
+  if [ "$count" = 0 ]; then echo "pitwall: nothing to restore"; return; fi
+
+  used=''
+  printf '%s\n' "$plan" | while IFS="$TAB" read -r harness sid cwd sname widx wname pidx; do
+    cmd=$(resume_cmd "$harness" "$sid") || { echo "skip  $sname:$widx $wname: unknown agent $harness"; continue; }
+    echo "$( [ "$mode" = --dry ] && echo would || echo open)  $sname:$widx $wname ($harness) in $(printf '%s' "$cwd" | sed "s|^$HOME|~|")"
+    [ "$mode" = --dry ] && continue
+    [ -d "$cwd" ] || cwd=$HOME
+    if ! tmux has-session -t "=$sname" 2>/dev/null; then
+      pane=$(tmux new-session -d -P -F '#{pane_id}' -s "$sname" -n "$wname" -c "$cwd")
+      [ "$(tmux display -p -t "$pane" '#{window_index}')" = "$widx" ] || tmux move-window -s "$pane" -t "=$sname:$widx" 2>/dev/null || true
+    elif ! tmux list-windows -t "=$sname" -F '#{window_index}' | grep -qx "$widx"; then
+      pane=$(tmux new-window -d -P -F '#{pane_id}' -t "=$sname:$widx" -n "$wname" -c "$cwd")
+    else
+      first=$(tmux display -p -t "=$sname:$widx.0" '#{pane_id} #{pane_current_command}' 2>/dev/null ||
+        tmux list-panes -t "=$sname:$widx" -F '#{pane_id} #{pane_current_command}' | head -1)
+      case " $used " in *" $sname:$widx "*) first='' ;; esac
+      if [ -n "$first" ] && is_shell "${first#* }"; then pane=${first%% *}
+      else
+        pane=$(tmux split-window -d -P -F '#{pane_id}' -t "=$sname:$widx" -c "$cwd")
+        tmux select-layout -t "=$sname:$widx" tiled >/dev/null
+      fi
+    fi
+    used="$used $sname:$widx"
+    tmux set -p -t "$pane" @pitwall_session "$sid" \; send-keys -t "$pane" "cd '$(printf '%s' "$cwd" | sed "s/'/'\\\\''/g")' && $cmd" Enter
+    # The record now points at this server, so restoring again does not open it twice.
+    f="$STATE/lanes/$sid"
+    [ -f "$f" ] && awk -F '\t' -v OFS='\t' -v s="$(server_pid)" '{ $8 = s; print }' "$f" >"$f.tmp" && mv -f "$f.tmp" "$f"
+  done
+  [ "$mode" = --dry ] || { tmux set -g @pitwall_restorable 0 2>/dev/null; echo "attach with: tmux attach"; }
+}
+
+# The popup behind prefix R: the plan, then one key to go.
+cmd_restore_prompt() {
+  plan=$(cmd_restore --dry)
+  printf '\n  \033[1mpitwall\033[0m · restore\n\n%s\n\n' "$(printf '%s\n' "$plan" | sed 's/^/  /')"
+  case $plan in "pitwall: nothing to restore") sleep 1.5; return ;; esac
+  printf '  \033[38;2;245;158;11mi\033[0m or ⏎ restore   \033[38;2;156;163;175mh q\033[0m cancel '
+  stty -icanon -echo 2>/dev/null; k=$(dd bs=1 count=1 2>/dev/null); stty icanon echo 2>/dev/null
+  case $k in i | '' | "$(printf '\n')" | "$(printf '\r')") printf '\n\n'; cmd_restore | sed 's/^/  /'; sleep 1.5 ;; esac
+}
+
+cmd_forget() {
+  [ -n "${1:-}" ] || { echo "usage: pitwall forget <session id or its first characters>" >&2; exit 1; }
+  n=$(find "$STATE/lanes" -type f -name "$1*" 2>/dev/null | wc -l | tr -d ' ')
+  find "$STATE/lanes" -type f -name "$1*" -delete 2>/dev/null
+  echo "forgot $n saved lane(s)"
+}
+
+# --- worktrees ---------------------------------------------------------------------------------------------
+
+# new <name>: gwm makes the worktree inside the current pane's repository; the agent starts in a new window there.
+# The commands run in that window's own shell, so any prompt from gwm or the agent is yours to answer.
+cmd_new() {
+  name=${1:?usage: pitwall new <name> [--agent claude|codex]}
+  agent=$(tmux show -gqv @pitwall-agent 2>/dev/null)
+  agent=${agent:-claude}
+  [ "${2:-}" = --agent ] && agent=${3:?usage: pitwall new <name> --agent claude|codex}
+  command -v gwm >/dev/null || { echo "pitwall: gwm is not installed (https://github.com/kbrdn1/gwm)" >&2; exit 1; }
+  repo=$(tmux display -p '#{pane_current_path}')
+  pane=$(tmux new-window -P -F '#{pane_id}' -n "$name" -c "$repo")
+  tmux send-keys -t "$pane" "gwm create --name '$name' && cd \"\$(gwm path '$name')\" && $agent" Enter
+}
+
+# done @N: review the lane's diff in lumen, then, only on an explicit y, close the window and remove the worktree.
+cmd_done() {
+  id=$(resolve "${1:?usage: pitwall done @N}")
+  tmux display-popup -E -w 90% -h 90% -d "$(tmux display -p -t "$id" '#{pane_current_path}')" "'$DIR/bin/pitwall' _done '$id'"
+}
+
+cmd__done() {
+  id=$1
+  path=$(pwd)
+  command -v lumen >/dev/null && lumen diff || git -c color.ui=always diff | less -R
+  printf '\n  Remove the worktree %s and close its window? [y/N] ' "${path##*/}"
+  read -r answer
+  case $answer in
+    y | Y)
+      win=$(tmux display -p -t "$id" '#{window_id}')
+      cd "$HOME" && gwm remove "${path##*/}" && tmux kill-window -t "$win"
+      ;;
+    *) echo "  Kept." && sleep 0.6 ;;
+  esac
 }
 
 EVENTS='SessionStart UserPromptSubmit PreToolUse PostToolUse PermissionRequest Notification Stop SessionEnd'
@@ -151,6 +320,7 @@ cmd_demo() {
   # A blank server styled like the mateonunez.co theme: none of your config, plugins or shell prompt runs here.
   $T -f /dev/null start-server \; set -g base-index 1 \; set -g pane-base-index 1 \; set -g allow-set-title off \
     \; set -g default-command "env PS1='❯ ' /bin/sh" \
+    \; set-environment -g XDG_STATE_HOME "${TMPDIR:-/tmp}/pitwall-demo-state" \
     \; new-session -d -s lab -n opentimeline -x 160 -y 40
   $T set -g prefix2 C-a \; set -g mouse on \; set -g status-interval 2 \
     \; set -g status-style 'bg=#0a0a0a,fg=#6b7280' \; set -g status-left '' \
@@ -198,6 +368,15 @@ case ${1:-} in
   next) shift; cmd_next "${1:-}" ;;
   board) exec "$DIR/bin/pitwall-board" ;;
   _lanes) lanes ;;
+  stats) shift; cmd_stats "${1:-}" ;;
+  quota) shift; cmd_quota "${1:-}" ;;
+  saved) cmd_saved ;;
+  restore) shift; cmd_restore "${1:-}" ;;
+  _restore-prompt) cmd_restore_prompt ;;
+  forget) shift; cmd_forget "${1:-}" ;;
+  new) shift; cmd_new "$@" ;;
+  done) shift; cmd_done "$@" ;;
+  _done) shift; cmd__done "$@" ;;
   install) shift; cmd_install "${1:-}" ;;
   doctor) cmd_doctor ;;
   demo) shift; cmd_demo "${1:-}" ;;

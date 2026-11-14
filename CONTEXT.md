@@ -12,4 +12,6 @@ The words pitwall uses, and only those.
 - **Board**: the popup listing every lane, `asking` first, then `done`, then `working`, then the rest.
 - **Ref**: the short handle `@1`, `@2`… that `pitwall ls` prints, valid until the next `ls`. Agents act on refs, not on pane ids.
 - **Seat**: the OpenTimeline system identity pitwall reports signals with. It has `read` and `signal` only.
+- **Record**: one file per agent session in `~/.local/state/pitwall/lanes/`: its agent, session id, directory, and where it lived (session, window, pane, tmux server). Written by the hook, read by restore.
+- **Restorable**: a record whose tmux server is gone. On a live server, a lane without its agent was closed on purpose and stays closed.
 - **Hook**: the one `sh` script both harnesses call on every event. It sets state; it never talks to the network.

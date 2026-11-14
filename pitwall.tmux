@@ -11,6 +11,7 @@ DONE=$(opt @pitwall-color-done '#00c758')
 GONE=$(opt @pitwall-color-gone '#fb2c36')
 KEY_BOARD=$(opt @pitwall-key-board 'A')
 KEY_NEXT=$(opt @pitwall-key-next 'a')
+KEY_RESTORE=$(opt @pitwall-key-restore 'R')
 
 AGENT='^(codex|claude|[0-9.]+)$' # Claude Code shows up as its version, e.g. 2.1.323
 
@@ -28,7 +29,8 @@ glyph() { # $1 asking style, $2 done style, $3 gone style
 # The colour also carries to the window name that follows; the current window keeps its own style.
 tmux set -g @pitwall-glyph "$(glyph "#[fg=$ASK bold]" "#[fg=$DONE bold]" "#[fg=$GONE]")"
 tmux set -g @pitwall-glyph-plain "$(glyph '' '' '')"
-tmux set -g @pitwall-summary "#{W:#{P:#{?#{==:$S,asking},#[fg=$ASK bold]◆ ,}#{?#{==:$S,done},#[fg=$DONE bold]✓ ,}}}"
+# Right side: lanes that need you, lanes waiting to be restored after a crash, then the usage limits.
+tmux set -g @pitwall-summary "#{W:#{P:#{?#{==:$S,asking},#[fg=$ASK bold]◆ ,}#{?#{==:$S,done},#[fg=$DONE bold]✓ ,}}}#[nobold]#{?#{&&:#{@pitwall_restorable},#{!=:#{@pitwall_restorable},0}},#[fg=$ASK]↺ #{@pitwall_restorable}  ,}#{?#{@pitwall_quota},#{@pitwall_quota}  ,}"
 
 # Put the glyph before the window name in whatever format the theme already has.
 inject() { # $1 option, $2 glyph option
@@ -62,7 +64,12 @@ tmux set-hook -g 'client-attached[73]' "$CLEAR"
 # Board and jump. Not choose-tree: its j/k are compiled into tmux, and navigation here is Colemak (n/e).
 tmux bind "$KEY_BOARD" display-popup -E -w 84% -h 78% -b rounded -S "fg=#404040" "'$DIR/bin/pitwall-board'"
 tmux bind "$KEY_NEXT" run-shell "'$DIR/bin/pitwall' next"
+tmux bind "$KEY_RESTORE" display-popup -E -w 70% -h 50% -b rounded -S "fg=#404040" "'$DIR/bin/pitwall' _restore-prompt"
 
 # Lanes may already be working when the plugin loads (or a client attaches): start the spinner.
 tmux set-hook -g 'client-attached[74]' "run-shell -b \"'$DIR/bin/pitwall-tick'\""
 tmux run-shell -b "'$DIR/bin/pitwall-tick'"
+
+# After a crash, say how many lanes can come back (↺ N, prefix R). Refresh the usage limits in the background.
+tmux run-shell -b "tmux set -g @pitwall_restorable \"\$('$DIR/bin/pitwall' restore --count)\""
+[ "$(opt @pitwall-quota on)" = on ] && tmux run-shell -b "'$DIR/bin/pitwall' quota --refresh"

@@ -15,6 +15,8 @@ sel=0
 tick=0
 rows=()
 sessions=0
+metrics=''
+quota=''
 
 load() {
   rows=()
@@ -23,6 +25,21 @@ load() {
   sessions=$(printf '%s\n' "${rows[@]}" | awk -F "$US" 'NF { s[$3] = 1 } END { print length(s) }')
   ((sel >= ${#rows[@]})) && sel=$((${#rows[@]} - 1))
   ((sel < 0)) && sel=0
+  quota=$(tmux show -gqv @pitwall_quota_plain 2>/dev/null)
+  stats
+}
+
+# The selected lane's model, context and tokens, from its transcript (incremental, so cheap every second).
+stats() {
+  local rank state session window id since harness task transcript sid model pct _ctx _raw total out
+  metrics=''
+  ((${#rows[@]})) || return
+  IFS="$US" read -r rank state session window id since harness task transcript sid <<<"${rows[sel]}"
+  IFS=$'\t' read -r model pct _ctx _raw total out < <("$(dirname "$PITWALL")/pitwall-stats" "$harness" "$transcript" "$sid" 2>/dev/null)
+  [ -n "$model" ] && metrics+="${model}"
+  [ -n "$pct" ] && metrics+="${metrics:+ · }ctx ${pct}%"
+  [ -n "$total" ] && metrics+="${metrics:+ · }${total} tok"
+  [ -n "$out" ] && metrics+=" (${out} out)"
 }
 
 age() {
@@ -45,7 +62,7 @@ key() { printf '%s %s %s %s%s   ' "${CHIP}${TEXT}" "$1" "${R}" "${MUTED}$2" "${R
 
 draw() {
   local cols lines n=${#rows[@]} i c_ask=0 c_done=0 c_work=0 c_idle=0 section='' out
-  local rank state session window id since harness task glyph colour sect bg width sesw=0
+  local rank state session window id since harness task transcript sid glyph colour sect bg width sesw=0
   cols=$(tput cols) lines=$(tput lines)
   for ((i = 0; i < n; i++)); do
     case ${rows[i]} in
@@ -65,7 +82,7 @@ draw() {
 
   width=$((cols - 41 - sesw)) # bar · number · glyph · 17 name · session · task · 7 harness · 4 age · gaps
   for ((i = 0; i < n; i++)); do
-    IFS="$US" read -r rank state session window id since harness task <<<"${rows[i]}"
+    IFS="$US" read -r rank state session window id since harness task transcript sid <<<"${rows[i]}"
     IFS="$US" read -r glyph colour sect <<<"$(style "$state")"
     if [ "$sect" != "$section" ]; then
       section=$sect
@@ -79,20 +96,21 @@ draw() {
   done
 
   if ((n)); then
-    IFS="$US" read -r rank state session window id since harness task <<<"${rows[sel]}"
+    IFS="$US" read -r rank state session window id since harness task transcript sid <<<"${rows[sel]}"
     local used room max a head
     used=$(printf '%s' "$out" | wc -l)
     max=$((lines * 45 / 100)) # the preview never pushes the list off screen
     room=$((lines - used - 5))
     ((room > max)) && room=$max
     a=$(age "$since")
-    head="${window} · ${state}${a:+ ${a}}"
-    out+=$'\n'"  ${DIM}╭─ ${TEXT}${window}${MUTED} · ${state}${a:+ ${a}} ${DIM}$(printf '%*s' $((cols - ${#head} - 8)) '' | tr ' ' '─')${R}"$'\n'
+    head="${window} · ${state}${a:+ ${a}}${metrics:+ · ${metrics}}"
+    out+=$'\n'"  ${DIM}╭─ ${TEXT}${window}${MUTED} · ${state}${a:+ ${a}}${metrics:+ · ${metrics}} ${DIM}$(printf '%*s' $((cols - ${#head} - 8)) '' | tr ' ' '─')${R}"$'\n'
     if ((room > 0)); then
       out+="$(tmux capture-pane -e -J -p -t "$id" 2>/dev/null | sed 's/[[:space:]]*$//' | awk 'NF' | tail -n "$room" | sed "s/^/  ${DIM}│${R} /")"$'\n'
     fi
   fi
   printf '%s%s[J' "${out//$'\n'/${EOL}$'\n'}" "$E"
+  [ -n "$quota" ] && printf '%s[%d;%dH%s%s%s' "$E" "$lines" $((cols - ${#quota} - 1)) "$DIM" "$quota" "$R"
   printf '%s[%d;1H  %s%s%s%s%s' "$E" "$lines" "$(key 'n e' move)" "$(key 'i ⏎' jump)" "$(key 1-9 pick)" "$(key 'd D' first/last)" "$(key 'h q' close)"
 }
 
@@ -124,10 +142,10 @@ while :; do
     case $rest in '[A') k=e ;; '[B') k=n ;; '[C') k=i ;; '[D') k=h ;; *) exit 0 ;; esac
   fi
   case $k in
-    n | j) ((sel < ${#rows[@]} - 1)) && sel=$((sel + 1)) ;;
-    e | k) ((sel > 0)) && sel=$((sel - 1)) ;;
-    d) sel=0 ;;
-    D) sel=$((${#rows[@]} - 1)) ;;
+    n | j) ((sel < ${#rows[@]} - 1)) && sel=$((sel + 1)) && stats ;;
+    e | k) ((sel > 0)) && sel=$((sel - 1)) && stats ;;
+    d) sel=0 && stats ;;
+    D) sel=$((${#rows[@]} - 1)) && stats ;;
     i | '') ((${#rows[@]})) && jump "$sel" ;;
     [1-9]) ((k <= ${#rows[@]})) && jump $((k - 1)) ;;
     h | q) exit 0 ;;

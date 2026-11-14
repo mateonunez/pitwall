@@ -23,6 +23,7 @@ You need tmux 3.2 or newer and a POSIX shell. The installer uses python3 to edit
 ```sh
 git clone https://github.com/mateonunez/pitwall.git
 ln -s "$PWD/pitwall" ~/.tmux/plugins/pitwall
+ln -s "$PWD/pitwall/bin/pitwall" ~/.local/bin/pitwall   # or anywhere on your PATH
 ```
 
 Add me to your tmux config next to your other plugins, then reload it:
@@ -34,12 +35,12 @@ set -g @plugin 'mateonunez/pitwall'
 Teach your agents to report:
 
 ```sh
-pitwall/bin/pitwall install           # shows the hook lines it would add, changes nothing
-pitwall/bin/pitwall install --write   # adds them, with a backup beside each file
-pitwall/bin/pitwall doctor            # says what is missing, and exits 1 when something is
+pitwall install           # shows the hook lines it would add, changes nothing
+pitwall install --write   # adds them, with a backup beside each file
+pitwall doctor            # says what is missing, and exits 1 when something is
 ```
 
-Restart your agents so they pick up the hooks; Codex asks you to trust each new one. Only want to look? `bin/pitwall demo` starts a throwaway tmux server with a few fake lanes, and `bin/pitwall demo stop` removes it.
+Restart your agents so they pick up the hooks; Codex asks you to trust each new one. Only want to look? `pitwall demo` starts a throwaway tmux server with a few fake lanes, and `pitwall demo stop` removes it.
 
 ## What you get
 
@@ -49,6 +50,9 @@ Restart your agents so they pick up the hooks; Codex asks you to trust each new 
 - **The jump.** `prefix a` takes you to the next lane that is asking or done. Press it again to cycle.
 - **Several agents in one window.** Each pane is its own lane (`ait.1`, `ait.2`); the window shows the most urgent of them.
 - **Names that mean something.** A window running Claude Code shows up as `2.1.323`; I name it after the agent's directory instead.
+- **Your agents survive a dead tmux.** Every agent session leaves a small record as it works. When the tmux server dies, the status line says `↺ 4` next time, and `prefix R` (or `pitwall restore` from any terminal) rebuilds the sessions, windows and panes and resumes each agent where it was. An agent you closed on purpose stays closed.
+- **Context on every lane.** The board's preview names the model, how full the context is and how many tokens the session has used, read from the agent's own transcript; `pitwall stats` prints it for all lanes. Your Claude and Codex usage limits sit in the status line (`claude 6% 34%w`), from [CodexBar](https://github.com/steipete/CodexBar), refreshed when a turn ends.
+- **Lanes as worktrees.** `pitwall new fix-login` makes a worktree with [gwm](https://github.com/kbrdn1/gwm), opens a window there and starts your agent. `pitwall done @3` shows the diff in [lumen](https://github.com/jnsahaj/lumen), and removes the worktree only if you say so.
 - **Made for agents as well.** `pitwall ls` prints one line per lane with a ref (`@1 lab/opentimeline asking 3m codex Cut the 0.2.0 release`), `--json` for scripts, and `pitwall peek @1` shows that lane's last lines. An orchestrator reads your whole fleet with one call.
 
 ## Keys and commands
@@ -57,6 +61,7 @@ Restart your agents so they pick up the hooks; Codex asks you to trust each new 
 | --- | --- |
 | `prefix A` | The board |
 | `prefix a` | Next lane that needs you |
+| `prefix R` | Restore the lanes a dead tmux took with it |
 
 | Command | Does |
 | --- | --- |
@@ -65,6 +70,13 @@ Restart your agents so they pick up the hooks; Codex asks you to trust each new 
 | `pitwall go @N` | Jump to a lane |
 | `pitwall next` | Jump to the next lane that is asking or done |
 | `pitwall board` | The board, outside a popup |
+| `pitwall stats [@N]` | Model, context and tokens per lane |
+| `pitwall quota [--refresh]` | Claude and Codex usage limits |
+| `pitwall saved` | The lanes pitwall can bring back, and which are running or closed |
+| `pitwall restore [--dry\|--all]` | Reopen them, resuming each agent |
+| `pitwall forget <id>` | Drop a saved lane |
+| `pitwall new <name> [--agent codex]` | Worktree, window and agent in one go |
+| `pitwall done @N` | Review the diff, then remove the worktree if you confirm |
 | `pitwall install [--write]` | The hook lines for Claude Code and Codex |
 | `pitwall doctor` | What is missing |
 | `pitwall demo [stop]` | A throwaway server with fake lanes |
@@ -77,6 +89,11 @@ Set them before the plugin loads, like any tmux option.
 | --- | --- | --- |
 | `@pitwall-key-board` | `A` | Key for the board |
 | `@pitwall-key-next` | `a` | Key for the jump |
+| `@pitwall-key-restore` | `R` | Key for restore |
+| `@pitwall-agent` | `claude` | Agent `pitwall new` starts |
+| `@pitwall-resume-claude` · `-codex` | `claude --resume {id}` · `codex resume {id}` | How a saved session resumes |
+| `@pitwall-quota` | `on` | Usage limits in the status line |
+| `@pitwall-codexbar` | the CLI inside CodexBar.app | Path to `CodexBarCLI` |
 | `@pitwall-color-asking` · `-done` · `-gone` | `#f59e0b` · `#00c758` · `#fb2c36` | Glyph colours |
 | `@pitwall-rename` | `on` | Name agent windows after their directory |
 | `@pitwall-toast` | `on` | Toast when a lane starts asking or finishes |
@@ -96,11 +113,11 @@ flowchart LR
   visit(["you visit a lane"]) -- "tmux hook" --> tmux
 ```
 
-The hook runs on every tool call next to whatever else you have hooked, so it stays in `sh` and makes two tmux calls when nothing changed. Rendering is tmux format strings reading window options: no process per redraw. Without hooks I still read a working Codex from the spinner in its pane title. The domain words are in [CONTEXT.md](CONTEXT.md).
+The hook runs on every tool call next to whatever else you have hooked, so it stays in `sh` and makes two tmux calls when nothing changed. It writes the restore record (`~/.local/state/pitwall/lanes/<session>`) only when a session starts and once per turn. Rendering is tmux format strings reading window options: no process per redraw. Without hooks I still read a working Codex from the spinner in its pane title. The domain words are in [CONTEXT.md](CONTEXT.md).
 
 ## What's next
 
-Lanes as worktrees (`pitwall new`, `pitwall done`), `pitwall restore` after a reboot, OpenTimeline signals so you hear about a waiting lane outside tmux, and CodexBar quotas in the status line. The reasoning is in [docs/roadmap.md](docs/roadmap.md).
+OpenTimeline signals, so a lane waiting for you reaches you outside tmux; a board you can filter by typing; a skill so agents learn to read the fleet. The reasoning is in [docs/roadmap.md](docs/roadmap.md).
 
 ## Develop
 

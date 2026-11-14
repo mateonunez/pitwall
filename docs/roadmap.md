@@ -10,14 +10,19 @@ Where pitwall goes next, and the rules it keeps on the way.
 4. **Your setup stays yours.** pitwall slips into the theme, the keys and the shell you already have. Colemak and vim navigation are first-class, not an afterthought.
 5. **Nothing risky by default.** pitwall never types into an agent's pane. Anything that would ships off and marked as an experiment.
 
+## Shipped
+
+- **Restore.** The hook keeps one record per agent session; after tmux dies, `prefix R` or `pitwall restore` rebuilds sessions, windows and panes and resumes each agent.
+- **Lanes as worktrees.** `pitwall new` and `pitwall done`, on [gwm](https://github.com/kbrdn1/gwm) and [lumen](https://github.com/jnsahaj/lumen).
+- **Context on every lane.** Model, context and tokens from each agent's transcript; [CodexBar](https://github.com/steipete/CodexBar) usage limits in the status line.
+
 ## Next
 
 | Step | Ships | Done when |
 | --- | --- | --- |
-| **Lanes as worktrees** | `pitwall new <task> [--agent codex]` creates a worktree with [gwm](https://github.com/kbrdn1/gwm), opens a window there and starts the agent; `pitwall done @N` opens the diff in [lumen](https://github.com/jnsahaj/lumen) and removes the worktree after you confirm | A task goes from idea to reviewed diff without typing a path |
-| **Restore** | The hook already sees each session's id; pitwall keeps `lane → resume command` and `pitwall restore` reopens the lanes that exited | A reboot costs one command |
-| **Needs you, beyond the terminal** | `lane.state` signals to [OpenTimeline](https://github.com/mateonunez/opentimeline) through a system seat: `asking` needs attention, `asking` for ten minutes is urgent. Its bell comes back as a count in the status line | A lane waiting for you shows up where you are, not only in tmux |
-| **Quotas** | [CodexBar](https://github.com/steipete/CodexBar)'s CLI usage for Claude and Codex in the status line, cached for a few minutes | You see the limit coming before an agent hits it |
+| **Needs you, beyond the terminal** | `lane.state` signals to [OpenTimeline](https://github.com/mateonunez/opentimeline) through a system seat: `asking` needs attention, `asking` for ten minutes is urgent, with the lane's metrics as attributes. Its bell comes back as a count in the status line | A lane waiting for you shows up where you are, not only in tmux |
+| **Metrics over time** | A small per-session ledger (turns, tokens, time asking versus working) so `pitwall stats --today` answers where the day went | You see which lanes cost the most and which waited on you the longest |
+| **A board you can filter** | `/` filters lanes as you type; the reason a lane is asking shows on its row | Fifteen lanes stay as quick as four |
 | **A skill for agents** | `skills/pitwall/SKILL.md`, so an orchestrator learns `pitwall ls`, refs and `peek` | An agent reads the fleet and asks before acting |
 
 ## Open questions

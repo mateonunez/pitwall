@@ -75,4 +75,49 @@ eq "ls lists both panes as lanes" "$(TMUX="$SOCK,0,0" "$ROOT/bin/pitwall" ls | a
 hook "$P3" Stop
 eq "visiting a window clears every done pane in it" "$($T select-window -t s:two \; select-window -t s:one; sleep 0.3; $T display -p -t "$P3" '#{@pitwall_state}')" idle
 
+# --- save and restore, with a throwaway state directory ----------------------------------------------------
+XDG_STATE_HOME=$(mktemp -d)
+export XDG_STATE_HOME
+LANES="$XDG_STATE_HOME/pitwall/lanes"
+pw() { TMUX="$SOCK,0,0" "$ROOT/bin/pitwall" "$@"; }
+
+hook "$P2" UserPromptSubmit '{"session_id":"s-hook","transcript_path":"/tmp/t.jsonl","cwd":"/tmp"}'
+eq "a new session writes its record" "$(cut -f2,3,4 "$LANES/s-hook" 2>/dev/null | tr '\t' ' ')" "s-hook /tmp s"
+eq "and remembers its transcript" "$($T display -p -t "$P2" '#{@pitwall_transcript}')" /tmp/t.jsonl
+hook "$P2" SessionEnd '{"session_id":"s-hook","reason":"other"}'
+eq "an exit by signal keeps the record" "$([ -f "$LANES/s-hook" ] && echo kept)" kept
+hook "$P2" SessionEnd '{"session_id":"s-hook","reason":"prompt_input_exit"}'
+eq "a deliberate exit forgets it" "$([ -f "$LANES/s-hook" ] && echo kept || echo gone)" gone
+
+now=$(date +%s)
+server=$($T display -p '#{pid}')
+printf 'claude\ts-api\t/tmp\twork\t2\tapi\t1\t1\t%s\n' "$now" >"$LANES/s-api"       # a server that died
+printf 'codex\ts-api2\t/tmp\twork\t2\tapi\t2\t1\t%s\n' "$now" >"$LANES/s-api2"      # same window, second pane
+printf 'claude\ts-web\t/tmp\twork\t3\tweb\t1\t%s\t%s\n' "$server" "$now" >"$LANES/s-web" # closed on this server
+$T set -g @pitwall-resume-claude 'echo resumed {id}' \; set -g @pitwall-resume-codex 'echo resumed {id}' \; set -g default-shell /bin/sh
+
+eq "restore counts the lanes of a dead server" "$(pw restore --count)" 2
+pw restore >/dev/null
+sleep 0.5
+eq "restore rebuilds the window with both agents" "$($T display -p -t '=work:2' '#{window_name} #{window_panes}')" "api 2"
+eq "each pane resumes its own session" "$($T list-panes -t '=work:2' -F '#{@pitwall_session}' | sort | tr '\n' ' ')" "s-api s-api2 "
+PA=$($T list-panes -t '=work:2' -F '#{pane_id} #{@pitwall_session}' | awk '$2 == "s-api" { print $1 }')
+ran() { $T capture-pane -p -t "$PA" | grep -cE '^resumed s-api[[:space:]]*$'; }
+i=0; while [ "$(ran)" != 1 ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+eq "the resume command ran in its pane" "$(ran)" 1
+eq "a lane closed on purpose stays closed" "$($T list-windows -t '=work' -F '#{window_index}' | grep -c '^3$')" 0
+eq "restoring twice opens nothing new" "$(pw restore --count)" 0
+eq "saved tells running from closed" "$(pw saved | awk '{ print $1 }' | sort | uniq -c | awk '{ printf "%s=%s ", $2, $1 }')" "closed=1 running=2 "
+rm -rf "$XDG_STATE_HOME"
+
+# --- usage limits, from a synthetic CodexBar payload -------------------------------------------------------
+quota() { printf '%s' "$1" | "$ROOT/bin/pitwall-quota" 1800000000 | tail -1; }
+eq "limits read as session and week" \
+  "$(quota '[{"provider":"claude","usage":{"primary":{"usedPercent":7},"secondary":{"usedPercent":34}}}]')" "claude 7% 5h · 34% wk"
+eq "a hot window shows the time to its reset" \
+  "$(quota '[{"provider":"codex","usage":{"secondary":{"usedPercent":91,"resetsAt":"2027-01-15T09:30:00Z"}}}]')" "codex 91% wk ↻ 1h"
+eq "a pace that runs out early warns" \
+  "$(quota '[{"provider":"claude","usage":{"secondary":{"usedPercent":40}},"pace":{"secondary":{"willLastToReset":false,"etaSeconds":180000}}}]')" "claude 40% wk ⚠ 2d"
+eq "no data, no segment" "$(quota '[]')" ""
+
 exit $fail

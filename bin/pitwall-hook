@@ -3,6 +3,7 @@
 # A window can hold several agents, so the state lives on the pane, never the window.
 # Hot path: it runs on every tool call next to other hooks, so plain sh, two tmux calls when nothing changes,
 # never the network. A change redraws every status line at once instead of waiting for status-interval.
+# It also keeps the record `pitwall restore` needs, written only when the session changes and once per turn.
 
 event=${1:-}
 harness=${2:-}
@@ -10,6 +11,13 @@ input=$(cat 2>/dev/null) # drain the JSON the harness writes, so it never blocks
 
 [ -n "$TMUX_PANE" ] || exit 0
 command -v tmux >/dev/null 2>&1 || exit 0
+
+json() { # json <key>: a string field of the payload, in plain sh (no process on the hot path)
+  case $input in *"\"$1\""*) ;; *) return ;; esac
+  t=${input#*\"$1\"}
+  t=${t#*\"}
+  printf '%s' "${t%%\"*}"
+}
 
 case $event in
   SessionStart) state=idle ;;
@@ -27,12 +35,51 @@ case $event in
   *) exit 0 ;;
 esac
 
-# Fields are split on \037, not a tab: tabs are whitespace to `read`, so an empty state would shift every field.
-US=$(printf '\037')
-info=$(tmux display -p -t "$TMUX_PANE" "#{@pitwall_state}$US#{window_id}$US#{window_name}#{?#{>:#{window_panes},1},.#{pane_index},}$US#{@pitwall-toast}" 2>/dev/null) || exit 0
-IFS=$US read -r current win name toast <<EOF
+sid=$(json session_id)
+
+# Tab-separated, and no field may be empty: tabs are whitespace to `read`, so an empty one would shift the rest.
+# (A control character would be safer, but tmux before 3.5 prints it escaped.) "-" stands for empty.
+TAB=$(printf '\t')
+info=$(tmux display -p -t "$TMUX_PANE" "#{?#{@pitwall_state},#{@pitwall_state},-}$TAB#{?#{@pitwall_session},#{@pitwall_session},-}$TAB#{window_id}$TAB#{?window_name,#{window_name},-}$TAB#{window_panes}$TAB#{pane_index}$TAB#{session_name}$TAB#{window_index}$TAB#{pid}$TAB#{?#{@pitwall-toast},#{@pitwall-toast},-}$TAB#{?#{@pitwall_quota_at},#{@pitwall_quota_at},0}" 2>/dev/null) || exit 0
+IFS=$TAB read -r current stored win wname panes pidx sname widx server toast quota_at <<EOF
 $info
 EOF
+[ "$current" = - ] && current=''
+[ "$stored" = - ] && stored=''
+[ "$wname" = - ] && wname=''
+[ "$toast" = - ] && toast=''
+fresh=''
+[ -n "$sid" ] && [ "$sid" != "$stored" ] && fresh=1
+# Nothing changed: leave now, unless the event keeps the saved record (once per turn, and at exit).
+case $event in Stop | SessionEnd) ;; *) [ "$current" = "$state" ] && [ -z "$fresh" ] && exit 0 ;; esac
+
+now=$(date +%s)
+name=$wname
+[ "${panes:-1}" -gt 1 ] && name="$wname.$pidx"
+sid=${sid:-$stored}
+
+# The record `pitwall restore` reads after a crash: one file per agent session, replaced atomically.
+record() {
+  [ -n "$sid" ] || return 0
+  dir=${XDG_STATE_HOME:-$HOME/.local/state}/pitwall/lanes
+  [ -d "$dir" ] || mkdir -p "$dir" 2>/dev/null || return 0
+  cwd=$(json cwd)
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$harness" "$sid" "${cwd:-$PWD}" "$sname" "$widx" "$wname" "$pidx" "$server" "$now" \
+    >"$dir/$sid.tmp" 2>/dev/null && mv -f "$dir/$sid.tmp" "$dir/$sid"
+}
+forget() { rm -f "${XDG_STATE_HOME:-$HOME/.local/state}/pitwall/lanes/$sid" 2>/dev/null; }
+
+if [ -n "$fresh" ]; then
+  tmux set -p -t "$TMUX_PANE" @pitwall_session "$sid" ';' set -p -t "$TMUX_PANE" @pitwall_transcript "$(json transcript_path)" >/dev/null 2>&1
+  record
+fi
+case $event in
+  Stop) record ;; # once per turn: keeps the window and pane position current
+  SessionEnd)
+    # A deliberate exit is not restored; anything else (the server died, a signal) keeps the record.
+    case $(json reason) in clear | logout | prompt_input_exit) forget ;; esac
+    ;;
+esac
 [ "$current" = "$state" ] && exit 0
 
 viewers=$(tmux list-clients -f "#{==:#{window_id},$win}" -F '#{client_name}' 2>/dev/null)
@@ -50,7 +97,7 @@ esac
 [ "$toast" = off ] && msg=''
 
 set -- set -p -t "$TMUX_PANE" @pitwall_state "$state" ';' \
-  set -p -t "$TMUX_PANE" @pitwall_since "$(date +%s)" ';' \
+  set -p -t "$TMUX_PANE" @pitwall_since "$now" ';' \
   set -p -t "$TMUX_PANE" @pitwall_harness "$harness" ';' \
   set -p -t "$TMUX_PANE" @pitwall_name "${PWD##*/}"
 for c in $(tmux list-clients -F '#{client_name}' 2>/dev/null); do
@@ -62,6 +109,9 @@ for c in $(tmux list-clients -F '#{client_name}' 2>/dev/null); do
 done
 tmux "$@" >/dev/null 2>&1
 
+bin=$(cd "$(dirname "$0")" && pwd)
 # The spinner animates only while something works; the ticker exits on its own afterwards.
-[ "$state" = working ] && tmux run-shell -b "'$(cd "$(dirname "$0")" && pwd)/pitwall-tick'" >/dev/null 2>&1
+[ "$state" = working ] && tmux run-shell -b "'$bin/pitwall-tick'" >/dev/null 2>&1
+# Quotas refresh when a turn ends and they are older than ten minutes: no polling.
+case $state in done | idle) [ $((now - ${quota_at:-0})) -gt 600 ] && tmux run-shell -b "'$bin/pitwall' quota --refresh" >/dev/null 2>&1 ;; esac
 exit 0
