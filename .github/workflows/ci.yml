@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      LANG: C.UTF-8 # tmux renders the glyphs and matches the braille spinner only in a UTF-8 locale
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tmux
+        run: sudo apt-get update -q && sudo apt-get install -yq tmux
+      - name: Syntax
+        run: |
+          sh -n pitwall.tmux bin/pitwall bin/pitwall-hook bin/pitwall-tick test/run.sh
+          bash -n bin/pitwall-board
+      - name: Checks
+        run: test/run.sh

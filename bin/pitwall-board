@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# pitwall board: every lane, grouped by what needs you, with a live preview of the selected one.
+# Keys follow Colemak + vim: n/e down/up, i or ⏎ jump in, h/q/esc close, d/D first/last, 1-9 jump straight.
+# Runs inside `display-popup -E`. Works on the macOS bash 3.2 (always ${VAR} before a non-ASCII glyph) and bash 5.
+
+PITWALL="$(cd "$(dirname "$0")" && pwd)/pitwall"
+E=$'\033'
+US=$'\037' # rows are read on this separator: a tab is whitespace to `read`, so empty fields would collapse
+AMBER="${E}[38;2;245;158;11m" GREEN="${E}[38;2;0;199;88m" RED="${E}[38;2;251;44;54m"
+TEXT="${E}[38;2;229;231;235m" MUTED="${E}[38;2;156;163;175m" DIM="${E}[38;2;107;114;128m"
+SELBG="${E}[48;2;38;38;38m" CHIP="${E}[48;2;55;55;55m" BOLD="${E}[1m" R="${E}[0m" EOL="${E}[K"
+SPIN=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+
+sel=0
+tick=0
+rows=()
+sessions=0
+
+load() {
+  rows=()
+  local line
+  while IFS= read -r line; do rows+=("${line//$'\t'/$US}"); done < <("$PITWALL" _lanes 2>/dev/null)
+  sessions=$(printf '%s\n' "${rows[@]}" | awk -F "$US" 'NF { s[$3] = 1 } END { print length(s) }')
+  ((sel >= ${#rows[@]})) && sel=$((${#rows[@]} - 1))
+  ((sel < 0)) && sel=0
+}
+
+age() {
+  case $1 in '' | *[!0-9]*) return ;; esac
+  local d=$(($(date +%s) - $1))
+  if ((d < 60)); then printf '%ss' "$d"; elif ((d < 3600)); then printf '%sm' $((d / 60)); elif ((d < 86400)); then printf '%sh' $((d / 3600)); else printf '%sd' $((d / 86400)); fi
+}
+
+style() { # state → glyph, colour, section
+  case $1 in
+    asking) printf '◆%s%s%sNEEDS YOU' "$US" "${BOLD}${AMBER}" "$US" ;;
+    done) printf '✓%s%s%sNEEDS YOU' "$US" "${BOLD}${GREEN}" "$US" ;;
+    working) printf '%s%s%s%sWORKING' "${SPIN[tick % 10]}" "$US" "${TEXT}" "$US" ;;
+    idle) printf '○%s%s%sIDLE' "$US" "${MUTED}" "$US" ;;
+    *) printf '✗%s%s%sGONE' "$US" "${RED}" "$US" ;;
+  esac
+}
+
+key() { printf '%s %s %s %s%s   ' "${CHIP}${TEXT}" "$1" "${R}" "${MUTED}$2" "${R}"; }
+
+draw() {
+  local cols lines n=${#rows[@]} i c_ask=0 c_done=0 c_work=0 c_idle=0 section='' out
+  local rank state session window id since harness task glyph colour sect bg width sesw=0
+  cols=$(tput cols) lines=$(tput lines)
+  for ((i = 0; i < n; i++)); do
+    case ${rows[i]} in
+      1"$US"*) c_ask=$((c_ask + 1)) ;; 2"$US"*) c_done=$((c_done + 1)) ;;
+      3"$US"*) c_work=$((c_work + 1)) ;; *) c_idle=$((c_idle + 1)) ;;
+    esac
+  done
+  ((sessions > 1)) && sesw=13 # the session column appears only when lanes span sessions
+
+  out="${E}[H" # overwrite in place: clearing the screen every frame flickers
+  local counts="${AMBER}◆ ${c_ask}${R}  ${GREEN}✓ ${c_done}${R}  ${TEXT}${SPIN[tick % 10]} ${c_work}${R}  ${MUTED}○ ${c_idle}${R}"
+  out+=$'\n'"$(printf '  %spit%swall%s%*s%s' "${BOLD}${TEXT}" "${AMBER}" "${R}" $((cols - 33)) '' "$counts")"$'\n'
+
+  if ((n == 0)); then
+    out+=$'\n'"  ${MUTED}No lanes yet. A window shows up here once its agent works or a hook reports it.${R}"$'\n'
+  fi
+
+  width=$((cols - 41 - sesw)) # bar · number · glyph · 17 name · session · task · 7 harness · 4 age · gaps
+  for ((i = 0; i < n; i++)); do
+    IFS="$US" read -r rank state session window id since harness task <<<"${rows[i]}"
+    IFS="$US" read -r glyph colour sect <<<"$(style "$state")"
+    if [ "$sect" != "$section" ]; then
+      section=$sect
+      out+=$'\n'"  ${MUTED}${sect}${R}"$'\n'
+    fi
+    bg='' && ((i == sel)) && bg=$SELBG
+    out+="$bg$( ((i == sel)) && printf %s "${AMBER}▌" || printf ' ')"
+    out+="$(printf ' %s%s%s %s%s %-17.17s%s' "${DIM}" "$( ((i < 9)) && printf %s $((i + 1)) || printf ' ')" "${R}${bg}" "$colour" "$glyph" "$window" "${R}${bg}")"
+    ((sesw)) && out+="$(printf ' %s%-12.12s%s' "${DIM}" "$session" "${R}${bg}")"
+    out+="$(printf ' %s%-*.*s%s %s%7s %4s%s%s' "${TEXT}" "$width" "$width" "$task" "${R}${bg}" "${DIM}" "$harness" "$(age "$since")" "$EOL" "$R")"$'\n'
+  done
+
+  if ((n)); then
+    IFS="$US" read -r rank state session window id since harness task <<<"${rows[sel]}"
+    local used room max a head
+    used=$(printf '%s' "$out" | wc -l)
+    max=$((lines * 45 / 100)) # the preview never pushes the list off screen
+    room=$((lines - used - 5))
+    ((room > max)) && room=$max
+    a=$(age "$since")
+    head="${window} · ${state}${a:+ ${a}}"
+    out+=$'\n'"  ${DIM}╭─ ${TEXT}${window}${MUTED} · ${state}${a:+ ${a}} ${DIM}$(printf '%*s' $((cols - ${#head} - 8)) '' | tr ' ' '─')${R}"$'\n'
+    if ((room > 0)); then
+      out+="$(tmux capture-pane -e -J -p -t "$id" 2>/dev/null | sed 's/[[:space:]]*$//' | awk 'NF' | tail -n "$room" | sed "s/^/  ${DIM}│${R} /")"$'\n'
+    fi
+  fi
+  printf '%s%s[J' "${out//$'\n'/${EOL}$'\n'}" "$E"
+  printf '%s[%d;1H  %s%s%s%s%s' "$E" "$lines" "$(key 'n e' move)" "$(key 'i ⏎' jump)" "$(key 1-9 pick)" "$(key 'd D' first/last)" "$(key 'h q' close)"
+}
+
+jump() {
+  local id
+  IFS="$US" read -r _ _ _ _ id _ <<<"${rows[$1]}"
+  [ -n "$id" ] && tmux switch-client -t "$id" \; select-window -t "$id" \; select-pane -t "$id"
+  exit 0
+}
+
+trap 'printf "%s[?25h%s[?7h" "$E" "$E"' EXIT
+printf '%s[?25l%s[?7l%s[2J' "$E" "$E" "$E" # hide the cursor; clip long preview lines instead of wrapping them
+
+# bash 4+ reads with a fractional timeout, so the spinner turns; the macOS bash 3.2 refreshes once a second.
+if ((BASH_VERSINFO[0] >= 4)); then FRAME=0.15 ESCWAIT=0.05 RELOAD=6; else FRAME=1 ESCWAIT=1 RELOAD=1; fi
+
+load
+while :; do
+  draw
+  k=''
+  if ! IFS= read -rsn1 -t "$FRAME" k; then # no key: next frame, and reload the lanes about once a second
+    tick=$((tick + 1))
+    ((tick % RELOAD == 0)) && load
+    continue
+  fi
+  if [ "$k" = "$E" ]; then
+    rest=''
+    IFS= read -rsn2 -t "$ESCWAIT" rest
+    case $rest in '[A') k=e ;; '[B') k=n ;; '[C') k=i ;; '[D') k=h ;; *) exit 0 ;; esac
+  fi
+  case $k in
+    n | j) ((sel < ${#rows[@]} - 1)) && sel=$((sel + 1)) ;;
+    e | k) ((sel > 0)) && sel=$((sel - 1)) ;;
+    d) sel=0 ;;
+    D) sel=$((${#rows[@]} - 1)) ;;
+    i | '') ((${#rows[@]})) && jump "$sel" ;;
+    [1-9]) ((k <= ${#rows[@]})) && jump $((k - 1)) ;;
+    h | q) exit 0 ;;
+  esac
+done

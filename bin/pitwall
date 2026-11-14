@@ -1,0 +1,206 @@
+#!/bin/sh
+# pitwall: see and steer coding agents from tmux.
+set -eu
+
+DIR=$(cd "$(dirname "$0")/.." && pwd)
+HOOK="$DIR/bin/pitwall-hook"
+
+usage() {
+  cat <<'EOF'
+pitwall: see and steer coding agents from tmux
+
+  pitwall ls [--json]       every lane, the ones that need you first, with a ref (@1, @2…)
+  pitwall peek @N [lines]   the last lines of a lane
+  pitwall go @N             jump to a lane
+  pitwall next              jump to the next lane that is asking or done (cycles)
+  pitwall board             the board (prefix A opens it in a popup)
+  pitwall install [--write] show (or add) the hook lines for Claude Code and Codex
+  pitwall doctor            what is missing; exits 1 when something is
+  pitwall demo [stop]       a throwaway tmux server with fake lanes, to look at pitwall
+EOF
+}
+
+# One row per lane (a pane running an agent), tab-separated, ordered by what needs you:
+# rank state session window pane-id since harness title. A window with several panes names them window.N.
+lanes() {
+  fmt=$(tmux show -gqv @pitwall-state-fmt)
+  [ -n "$fmt" ] || { echo "pitwall: not loaded in this tmux server (run pitwall.tmux)" >&2; exit 1; }
+  tmux list-panes -a -F "#{E:@pitwall-state-fmt}	#{session_name}	#{window_name}#{?#{>:#{window_panes},1},.#{pane_index},}	#{pane_id}	#{@pitwall_since}	#{?#{@pitwall_harness},#{@pitwall_harness},#{?#{==:#{pane_current_command},codex},codex,#{?#{m/r:^(claude|[0-9.]+)$,#{pane_current_command}},claude,}}}	#{pane_title}" |
+    awk -F '\t' 'BEGIN { OFS = "\t"; split("asking done working idle gone", o, " "); for (i in o) rank[o[i]] = i }
+      $1 != "" {
+        t = $7; if (t ~ /^[^A-Za-z0-9]+ /) sub(/^[^ ]+ /, "", t)  # spinner or ✳ in front of the task
+        sub(/ \| [^|]*$/, "", t); $7 = t                         # Codex appends " | <dir>"
+        print rank[$1], $0
+      }' |
+    sort -t "$(printf '\t')" -k1,1n -k3,3 -k4,4
+}
+
+# shortcut: refs are positions in the current ordering, valid until the lanes move; stable ids come with the TS CLI.
+resolve() {
+  n=${1#@}
+  lanes | awk -F '\t' -v n="$n" 'NR == n { print $5; found = 1 } END { exit !found }' ||
+    { echo "pitwall: no lane $1 (see pitwall ls)" >&2; exit 1; }
+}
+
+cmd_ls() {
+  now=$(date +%s)
+  lanes | awk -F '\t' -v now="$now" -v json="${1:-}" '
+    function age(s) { if (s == "") return "—"; d = now - s; return d < 60 ? d "s" : d < 3600 ? int(d / 60) "m" : int(d / 3600) "h" }
+    function q(s) { gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); return "\"" s "\"" }
+    {
+      t = $8
+      if (json == "--json")
+        printf "%s{\"ref\":\"@%d\",\"state\":%s,\"session\":%s,\"window\":%s,\"id\":%s,\"since\":%s,\"harness\":%s,\"task\":%s}", (NR > 1 ? ",\n " : "[\n "), NR, q($2), q($3), q($4), q($5), ($6 == "" ? "null" : $6), q($7), q(t)
+      else
+        printf "@%-2d %-22s %-8s %4s  %-7s %s\n", NR, $3 "/" $4, $2, age($6), $7, t
+    }
+    END { if (json == "--json") print (NR ? "\n]" : "[]") }'
+}
+
+cmd_peek() {
+  id=$(resolve "${1:?usage: pitwall peek @N}")
+  tmux capture-pane -p -t "$id" | awk 'NF' | tail -n "${2:-15}"
+}
+
+# Jump to a pane in any session: its session, its window, then the pane itself.
+jump() { tmux switch-client -t "$1" \; select-window -t "$1" \; select-pane -t "$1"; }
+
+cmd_go() { jump "$(resolve "${1:?usage: pitwall go @N}")"; }
+
+# Visiting a window: its panes that finished while you were away become idle (the tmux hook calls this).
+cmd_seen() {
+  tmux list-panes -t "${1:?usage: pitwall seen <window>}" -F '#{pane_id} #{@pitwall_state}' | while read -r pane state; do
+    [ "$state" = done ] && tmux set -p -t "$pane" @pitwall_state idle
+  done
+  tmux refresh-client -S 2>/dev/null || true
+}
+
+# The lane after this one among those asking or done, wrapping; pressed again it cycles through them.
+next_id() {
+  cur=$(tmux display -p '#{pane_id}' 2>/dev/null || true)
+  lanes | awk -F '\t' -v cur="$cur" '$2 == "asking" || $2 == "done" { id[++n] = $5; if ($5 == cur) at = n }
+    END { if (n && !(n == 1 && at == 1)) print id[at % n + 1] }'
+}
+
+cmd_next() {
+  id=$(next_id)
+  if [ "${1:-}" = --dry ]; then echo "$id"; return; fi
+  if [ -n "$id" ]; then jump "$id"; else tmux display-message "pitwall: nothing else needs you"; fi
+}
+
+EVENTS='SessionStart UserPromptSubmit PreToolUse PostToolUse PermissionRequest Notification Stop SessionEnd'
+
+cmd_install() {
+  # Same JSON shape for both harnesses: { "hooks": { Event: [ { "hooks": [ {type, command} ] } ] } }.
+  write=${1:-}
+  for target in claude:"$HOME/.claude/settings.json" codex:"$HOME/.codex/hooks.json"; do
+    harness=${target%%:*}
+    file=${target#*:}
+    python3 -I - "$file" "$HOOK" "$harness" "$write" "$EVENTS" <<'EOF'
+import json, os, shutil, sys
+path, hook, harness, write, events = sys.argv[1:]
+data = {}
+if os.path.exists(path):
+    with open(path) as f:
+        data = json.load(f)
+hooks = data.setdefault("hooks", {})
+added = []
+for event in events.split():
+    if harness == "codex" and event in ("Notification", "SessionEnd"):
+        continue  # Codex has no such events; PermissionRequest and Stop cover it
+    command = f"'{hook}' {event} {harness}"
+    groups = hooks.setdefault(event, [])
+    if any("pitwall-hook" in h.get("command", "") for g in groups for h in g.get("hooks", [])):
+        continue
+    groups.append({"hooks": [{"type": "command", "command": command, "timeout": 2}]})
+    added.append(event)
+if not added:
+    print(f"{harness}: hooks already installed in {path}")
+elif write == "--write":
+    if os.path.exists(path):
+        shutil.copy2(path, path + ".bak-pitwall")
+    with open(path + ".tmp", "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    os.replace(path + ".tmp", path)
+    print(f"{harness}: added {', '.join(added)} to {path} (backup: {path}.bak-pitwall)")
+else:
+    print(f"{harness}: would add {', '.join(added)} to {path}, each running:")
+    print(f"  '{hook}' <Event> {harness}")
+EOF
+  done
+  [ "$write" = --write ] || echo "run 'pitwall install --write' to add them; restart the agents to pick them up"
+}
+
+cmd_doctor() {
+  ok=0
+  check() { if eval "$2"; then echo "ok    $1"; else echo "MISS  $1${3:+ → $3}"; ok=1; fi; }
+  check "tmux 3.2 or newer" '[ "$(tmux -V | tr -dc 0-9. | cut -d. -f1)" -ge 3 ]'
+  check "inside tmux" '[ -n "${TMUX:-}" ]'
+  check "pitwall loaded in this server" '[ -n "$(tmux show -gqv @pitwall-state-fmt 2>/dev/null)" ]' "run-shell $DIR/pitwall.tmux"
+  check "Claude Code hooks" 'grep -q pitwall-hook "$HOME/.claude/settings.json" 2>/dev/null' "pitwall install --write"
+  check "Codex hooks" 'grep -q pitwall-hook "$HOME/.codex/hooks.json" 2>/dev/null' "pitwall install --write"
+  check "python3 (only for install)" 'command -v python3 >/dev/null'
+  return $ok
+}
+
+cmd_demo() {
+  T="tmux -L pitwall-demo"
+  if [ "${1:-}" = stop ]; then $T kill-server 2>/dev/null; echo "demo stopped"; return; fi
+  $T kill-server 2>/dev/null || true
+  # A blank server styled like the mateonunez.co theme: none of your config, plugins or shell prompt runs here.
+  $T -f /dev/null start-server \; set -g base-index 1 \; set -g pane-base-index 1 \; set -g allow-set-title off \
+    \; set -g default-command "env PS1='❯ ' /bin/sh" \
+    \; new-session -d -s lab -n opentimeline -x 160 -y 40
+  $T set -g prefix2 C-a \; set -g mouse on \; set -g status-interval 2 \
+    \; set -g status-style 'bg=#0a0a0a,fg=#6b7280' \; set -g status-left '' \
+    \; set -g window-status-format ' #I #W ' \
+    \; set -g window-status-current-format '#[fg=#0a0a0a,bg=#f59e0b,bold] #I #W ' \
+    \; set -g status-right '#[fg=#9ca3af]#S  %H:%M ' \; set -g status-right-length 80 \
+    \; set -g allow-rename off \; set -g automatic-rename off
+  pane() { # target state harness age-in-seconds task
+    $T set -p -t "$1" @pitwall_state "$2" \; set -p -t "$1" @pitwall_harness "$3" \
+      \; set -p -t "$1" @pitwall_since "$(($(date +%s) - $4))" \; select-pane -t "$1" -T "$5"
+  }
+  lane() { # window state harness age-in-seconds task, then what the pane shows
+    $T list-windows -t lab -F '#W' | grep -qx "$1" || $T new-window -t lab -n "$1"
+    pane "lab:$1" "$2" "$3" "$4" "$5"
+    $T send-keys -t "lab:$1" "clear; printf '$6'" Enter
+  }
+  lane opentimeline asking codex 180 "Cut the 0.2.0 release" \
+    '\n  • Ran pnpm test\n    └ 512 passing\n\n  $ pnpm release --tag v0.2.0\n\n  Allow command?  › 1. Yes   2. Yes, always   3. No\n'
+  lane website done claude 720 "Add the Spotify now-playing card" \
+    '\n  ⏺ Update(app/components/now-playing.tsx)\n    ⎿  Added 42 lines\n\n  ⏺ The card renders the current track and falls back to the last played one.\n'
+  lane ait working codex 2460 "Sync Linear issues into the RAG index" \
+    '\n  • Explored\n    └ Read packages/connectors/linear/src/sync.ts\n\n  • Running pnpm --filter @ait/linear test\n'
+  lane dotfiles idle claude 0 "Colemak keys for the pitwall board" \
+    '\n  ⏺ Board keys now follow nvim: n/e move, i jumps in, h closes.\n'
+  # Two agents in one window: each pane is its own lane, the window shows the more urgent one.
+  p=$($T split-window -h -d -P -F '#{pane_id}' -t lab:ait)
+  pane "$p" asking claude 60 "Review the Linear sync diff"
+  $T send-keys -t "$p" "clear; printf '\n  ⏺ Bash(pnpm --filter @ait/linear lint)\n\n  Do you want to proceed?\n  ❯ 1. Yes\n    2. No\n'" Enter
+  $T new-window -t lab -n notes
+  $T select-window -t lab:dotfiles
+  $T run-shell "'$DIR/pitwall.tmux'"
+  # Lanes move on their own so you can watch: ait finishes in 15 s while you look elsewhere, then a new lane starts.
+  $T run-shell -b "sleep 15; tmux set -p -t lab:ait.1 @pitwall_state done"
+  $T run-shell -b "sleep 25; tmux rename-window -t lab:notes fastify-orama \; set -p -t lab:fastify-orama @pitwall_state working \; set -p -t lab:fastify-orama @pitwall_harness claude \; select-pane -t lab:fastify-orama -T 'Bump Orama to v3'; '$DIR/bin/pitwall-tick'"
+  echo "attach:  tmux -L pitwall-demo attach -t lab"
+  echo "keys:    prefix A board · prefix a next lane that needs you"
+  echo "stop:    pitwall demo stop"
+}
+
+case ${1:-} in
+  ls) shift; cmd_ls "${1:-}" ;;
+  peek) shift; cmd_peek "$@" ;;
+  go) shift; cmd_go "$@" ;;
+  seen) shift; cmd_seen "$@" ;;
+  next) shift; cmd_next "${1:-}" ;;
+  board) exec "$DIR/bin/pitwall-board" ;;
+  _lanes) lanes ;;
+  install) shift; cmd_install "${1:-}" ;;
+  doctor) cmd_doctor ;;
+  demo) shift; cmd_demo "${1:-}" ;;
+  -h | --help | help | "") usage ;;
+  *) echo "pitwall: unknown command $1" >&2; usage >&2; exit 1 ;;
+esac

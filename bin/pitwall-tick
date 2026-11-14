@@ -1,0 +1,24 @@
+#!/bin/sh
+# pitwall-tick: animates the working spinner while any lane works, then exits. One per tmux server.
+# Each frame is one tmux call: set @pitwall_spin and redraw every client's status line (not the screen).
+
+FRAMES='⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏'
+INTERVAL=$(tmux show -gqv @pitwall-tick-interval)
+INTERVAL=${INTERVAL:-0.12}
+
+pid=$(tmux show -gqv @pitwall_tick_pid)
+[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && exit 0 # already ticking
+tmux set -g @pitwall_tick_pid $$
+trap 'tmux set -gu @pitwall_tick_pid \; set -gu @pitwall_spin 2>/dev/null' EXIT
+
+working() { tmux list-panes -a -F '#{E:@pitwall-state-fmt}' 2>/dev/null | grep -qx working; }
+
+while working; do
+  for f in $FRAMES; do
+    clients=$(tmux list-clients -F '#{client_name}' 2>/dev/null) || exit 0
+    set -- set -g @pitwall_spin "$f"
+    for c in $clients; do set -- "$@" ';' refresh-client -S -t "$c"; done
+    tmux "$@" 2>/dev/null
+    sleep "$INTERVAL"
+  done
+done

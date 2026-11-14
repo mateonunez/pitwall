@@ -1,0 +1,67 @@
+#!/bin/sh
+# pitwall-hook <Event> [harness]: called by Claude Code and Codex hooks; sets the lane state on this pane.
+# A window can hold several agents, so the state lives on the pane, never the window.
+# Hot path: it runs on every tool call next to other hooks, so plain sh, two tmux calls when nothing changes,
+# never the network. A change redraws every status line at once instead of waiting for status-interval.
+
+event=${1:-}
+harness=${2:-}
+input=$(cat 2>/dev/null) # drain the JSON the harness writes, so it never blocks on a full pipe
+
+[ -n "$TMUX_PANE" ] || exit 0
+command -v tmux >/dev/null 2>&1 || exit 0
+
+case $event in
+  SessionStart) state=idle ;;
+  UserPromptSubmit | PreToolUse | PostToolUse) state=working ;;
+  PermissionRequest) state=asking ;;
+  Notification)
+    # Claude: a permission prompt or a question waits for you; "idle for 60s" changes nothing.
+    case $input in
+      *permission_prompt* | *elicitation_dialog*) state=asking ;;
+      *) exit 0 ;;
+    esac
+    ;;
+  Stop) state=stop ;; # idle or done, decided below by whether someone is looking at the lane
+  SessionEnd) state=gone ;;
+  *) exit 0 ;;
+esac
+
+# Fields are split on \037, not a tab: tabs are whitespace to `read`, so an empty state would shift every field.
+US=$(printf '\037')
+info=$(tmux display -p -t "$TMUX_PANE" "#{@pitwall_state}$US#{window_id}$US#{window_name}#{?#{>:#{window_panes},1},.#{pane_index},}$US#{@pitwall-toast}" 2>/dev/null) || exit 0
+IFS=$US read -r current win name toast <<EOF
+$info
+EOF
+[ "$current" = "$state" ] && exit 0
+
+viewers=$(tmux list-clients -f "#{==:#{window_id},$win}" -F '#{client_name}' 2>/dev/null)
+if [ "$state" = stop ]; then
+  # Finished while you look at it: idle. Finished while you are elsewhere: done, the unread mark.
+  if [ -n "$viewers" ]; then state=idle; else state=done; fi
+  [ "$current" = "$state" ] && exit 0
+fi
+
+case $state in
+  asking) msg="◆ $name needs you" ;;
+  done) msg="✓ $name finished" ;;
+  *) msg='' ;;
+esac
+[ "$toast" = off ] && msg=''
+
+set -- set -p -t "$TMUX_PANE" @pitwall_state "$state" ';' \
+  set -p -t "$TMUX_PANE" @pitwall_since "$(date +%s)" ';' \
+  set -p -t "$TMUX_PANE" @pitwall_harness "$harness" ';' \
+  set -p -t "$TMUX_PANE" @pitwall_name "${PWD##*/}"
+for c in $(tmux list-clients -F '#{client_name}' 2>/dev/null); do
+  set -- "$@" ';' refresh-client -S -t "$c"
+  # A toast only for clients that are not already looking at the lane.
+  if [ -n "$msg" ]; then
+    case " $(echo $viewers) " in *" $c "*) ;; *) set -- "$@" ';' display-message -c "$c" -d 3000 "$msg" ;; esac
+  fi
+done
+tmux "$@" >/dev/null 2>&1
+
+# The spinner animates only while something works; the ticker exits on its own afterwards.
+[ "$state" = working ] && tmux run-shell -b "'$(cd "$(dirname "$0")" && pwd)/pitwall-tick'" >/dev/null 2>&1
+exit 0
