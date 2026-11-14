@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # pitwall board: every lane, grouped by what needs you, with a live preview of the selected one.
 # Keys follow Colemak + vim: n/e down/up, i or ⏎ jump in, h/q/esc close, d/D first/last, 1-9 jump straight.
-# Runs inside `display-popup -E`. Works on the macOS bash 3.2 (always ${VAR} before a non-ASCII glyph) and bash 5.
+# Runs inside `display-popup -E`, with the newest bash pitwall.tmux finds; it still works on the macOS bash 3.2
+# (always ${VAR} before a non-ASCII glyph).
 #
-# Speed: a frame starts no process. The lanes reload once a second; the preview and the metrics refresh then or
-# when the selection moves; the size changes only on SIGWINCH.
+# Speed: the screen is drawn in full only when something on it changed (lanes, preview, metrics, selection, size).
+# Between those, a spinner frame rewrites just its own cells. Lanes and the preview reload once a second; metrics
+# run in the background, so a key never waits for them.
 
 PITWALL="$(cd "$(dirname "$0")" && pwd)/pitwall"
 STATS="$(dirname "$PITWALL")/pitwall-stats"
@@ -14,67 +16,90 @@ AMBER="${E}[38;2;245;158;11m" GREEN="${E}[38;2;0;199;88m" RED="${E}[38;2;251;44;
 TEXT="${E}[38;2;229;231;235m" MUTED="${E}[38;2;156;163;175m" DIM="${E}[38;2;107;114;128m"
 SELBG="${E}[48;2;38;38;38m" CHIP="${E}[48;2;55;55;55m" BOLD="${E}[1m" R="${E}[0m" EOL="${E}[K"
 SPIN=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/pitwall-board.XXXXXX")
 
-sel=0 tick=0 sessions=0 cols=80 lines=24 now=0
-rows=() preview=() metrics='' quota='' rule='' keys=''
+sel=0 tick=0 sessions=0 cols=80 lines=24 now=0 dirty=1 sig='' psig=''
+metrics='' metrics_for='' stats_pid='' stats_due=0 quota='' rule='' keys=''
+L_state=() L_session=() L_window=() L_id=() L_since=() L_harness=() L_task=() L_transcript=() L_sid=()
+preview=() spin_at=() # spin_at: "row;col;selected" for every spinner cell of the last full draw
 
 resize() {
   cols=$(tput cols) lines=$(tput lines)
   rule=$(printf '%*s' "$cols" '' | tr ' ' '─')
   local k
-  keys='' # the footer never changes, so it is built once per size
+  keys=''
   for k in 'n e:move' 'i ⏎:jump' '1-9:pick' 'd D:first/last' 'h q:close'; do
     keys+="${CHIP}${TEXT} ${k%%:*} ${R} ${MUTED}${k#*:}${R}   "
   done
   printf '%s[2J' "$E"
+  dirty=1
 }
 
-clock() { # now, without a process where the shell can
+clock() {
   if ((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 2))); then printf -v now '%(%s)T' -1; else now=$(date +%s); fi
 }
 
+# Lanes, split once here (never while drawing). The screen redraws only when they changed.
 load() {
-  rows=()
-  local line
-  while IFS= read -r line; do rows+=("${line//$'\t'/$US}"); done < <("$PITWALL" _lanes 2>/dev/null)
-  local s seen=$US
+  local rank state session window id since harness task transcript sid new='' seen=$US
+  L_state=() L_session=() L_window=() L_id=() L_since=() L_harness=() L_task=() L_transcript=() L_sid=()
   sessions=0
-  for line in ${rows[@]+"${rows[@]}"}; do
-    IFS="$US" read -r _ _ s _ <<<"$line"
-    case $seen in *"$US$s$US"*) ;; *) seen+="$s$US" sessions=$((sessions + 1)) ;; esac
-  done
-  ((sel >= ${#rows[@]})) && sel=$((${#rows[@]} - 1))
+  while IFS="$US" read -r rank state session window id since harness task transcript sid; do
+    L_state+=("$state") L_session+=("$session") L_window+=("$window") L_id+=("$id") L_since+=("$since")
+    L_harness+=("$harness") L_task+=("$task") L_transcript+=("$transcript") L_sid+=("$sid")
+    case $seen in *"$US$session$US"*) ;; *) seen+="$session$US" sessions=$((sessions + 1)) ;; esac
+    new+="$state$id$since$task|"
+  done < <("$PITWALL" _lanes 2>/dev/null | tr '\t' '\037')
+  ((sel >= ${#L_id[@]})) && sel=$((${#L_id[@]} - 1))
   ((sel < 0)) && sel=0
   quota=$(tmux show -gqv @pitwall_quota_plain 2>/dev/null)
+  clock
+  new+="$quota$((now / 60))" # ages move by the minute
+  [ "$new" != "$sig" ] && sig=$new dirty=1
 }
 
-# The selected lane's last lines (one tmux call) and, less often, its metrics (one transcript read).
-refresh() {
+# The selected lane's last lines: one tmux call, kept only when they changed.
+peek() {
   preview=()
-  ((${#rows[@]})) || { metrics=''; return; }
-  local rank state session window id since harness task transcript sid line room n
-  IFS="$US" read -r rank state session window id since harness task transcript sid <<<"${rows[sel]}"
-  room=$((lines * 45 / 100))
+  ((${#L_id[@]})) || return
+  local line room=$((lines * 45 / 100)) n joined
   while IFS= read -r line; do
     [ -n "${line//[[:space:]]/}" ] && preview+=("$line") # blank lines waste the little room there is
-  done < <(tmux capture-pane -e -J -p -t "$id" -S "-$((room * 3))" 2>/dev/null)
+  done < <(tmux capture-pane -e -J -p -t "${L_id[sel]}" -S "-$((room * 3))" 2>/dev/null)
   n=${#preview[@]}
   ((n > room)) && preview=("${preview[@]:n-room}")
-  [ "${1:-}" = rows-only ] && return
-  local model pct _ctx _raw total out
-  metrics=''
-  IFS=$'\t' read -r model pct _ctx _raw total out < <("$STATS" "$harness" "$transcript" "$sid" 2>/dev/null)
-  [ -n "$model" ] && metrics+="$model"
-  [ -n "$pct" ] && metrics+="${metrics:+ · }ctx ${pct}%"
-  [ -n "$total" ] && metrics+="${metrics:+ · }${total} tok"
-  [ -n "$out" ] && metrics+=" (${out} out)"
+  joined="${preview[*]-}"
+  [ "$joined" != "$psig" ] && psig=$joined dirty=1
 }
 
-age() { # age <epoch> → $a
+# Metrics read the transcript, which can take a fraction of a second: run them in the background, pick them up later.
+stats_start() {
+  ((${#L_id[@]})) || return
+  [ -n "$stats_pid" ] && kill -0 "$stats_pid" 2>/dev/null && return
+  metrics_for=${L_id[sel]}
+  "$STATS" "${L_harness[sel]}" "${L_transcript[sel]}" "${L_sid[sel]}" >"$TMP/stats" 2>/dev/null &
+  stats_pid=$!
+}
+
+stats_poll() {
+  [ -n "$stats_pid" ] || return
+  kill -0 "$stats_pid" 2>/dev/null && return
+  stats_pid=''
+  [ "$metrics_for" = "${L_id[sel]-}" ] || { stats_due=$tick; return; } # the selection moved meanwhile: read again
+  local model pct _ctx _raw total out m=''
+  IFS=$'\t' read -r model pct _ctx _raw total out <"$TMP/stats"
+  [ -n "$model" ] && m+="$model"
+  [ -n "$pct" ] && m+="${m:+ · }ctx ${pct}%"
+  [ -n "$total" ] && m+="${m:+ · }${total} tok"
+  [ -n "$out" ] && m+=" (${out} out)"
+  [ "$m" != "$metrics" ] && metrics=$m dirty=1
+}
+
+age() { # age <epoch> → $a, by the minute
   a=''
   case $1 in '' | *[!0-9]*) return ;; esac
   local d=$((now - $1))
-  if ((d < 60)); then a="${d}s"; elif ((d < 3600)); then a="$((d / 60))m"; elif ((d < 86400)); then a="$((d / 3600))h"; else a="$((d / 86400))d"; fi
+  if ((d < 60)); then a='now'; elif ((d < 3600)); then a="$((d / 60))m"; elif ((d < 86400)); then a="$((d / 3600))h"; else a="$((d / 86400))d"; fi
 }
 
 style() { # style <state> → $glyph $colour $sect
@@ -88,54 +113,52 @@ style() { # style <state> → $glyph $colour $sect
 }
 
 draw() {
-  local n=${#rows[@]} i c_ask=0 c_done=0 c_work=0 c_idle=0 section='' out row used=2 width sesw=0
-  local rank state session window id since harness task transcript sid glyph colour sect bg mark num a head room start
+  local n=${#L_id[@]} i c_ask=0 c_done=0 c_work=0 c_idle=0 section='' out row y=2 width sesw=0
+  local glyph colour sect bg mark num a head room start
   clock
+  spin_at=()
   for ((i = 0; i < n; i++)); do
-    case ${rows[i]} in
-      1"$US"*) c_ask=$((c_ask + 1)) ;; 2"$US"*) c_done=$((c_done + 1)) ;;
-      3"$US"*) c_work=$((c_work + 1)) ;; *) c_idle=$((c_idle + 1)) ;;
-    esac
+    case ${L_state[i]} in asking) c_ask=$((c_ask + 1)) ;; done) c_done=$((c_done + 1)) ;; working) c_work=$((c_work + 1)) ;; *) c_idle=$((c_idle + 1)) ;; esac
   done
   ((sessions > 1)) && sesw=13 # the session column appears only when lanes span sessions
 
-  out="${E}[H${EOL}"$'\n' # overwrite in place: clearing the screen every frame flickers
+  out="${E}[H${EOL}"$'\n'
   printf -v row '  %spit%swall%s%*s%s◆ %d%s  %s✓ %d%s  %s%s %d%s  %s○ %d%s' "${BOLD}${TEXT}" "$AMBER" "$R" $((cols - 33)) '' \
     "$AMBER" "$c_ask" "$R" "$GREEN" "$c_done" "$R" "$TEXT" "${SPIN[tick % 10]}" "$c_work" "$R" "$MUTED" "$c_idle" "$R"
   out+="$row${EOL}"$'\n'
+  spin_at+=("$y;$((cols - 15 + ${#c_ask} + ${#c_done}));") # the header's spinner, after "◆ N  ✓ N  "
   if ((n == 0)); then
     out+="${EOL}"$'\n'"  ${MUTED}No lanes yet. A window shows up here once its agent works or a hook reports it.${R}${EOL}"$'\n'
-    used=$((used + 2))
+    y=$((y + 2))
   fi
 
   width=$((cols - 41 - sesw)) # bar · number · glyph · 17 name · session · task · 7 harness · 4 age · gaps
   for ((i = 0; i < n; i++)); do
-    IFS="$US" read -r rank state session window id since harness task transcript sid <<<"${rows[i]}"
-    style "$state"
+    style "${L_state[i]}"
     if [ "$sect" != "$section" ]; then
       section=$sect
       out+="${EOL}"$'\n'"  ${MUTED}${sect}${R}${EOL}"$'\n'
-      used=$((used + 2))
+      y=$((y + 2))
     fi
+    y=$((y + 1))
     bg='' mark=' ' num=' '
     ((i == sel)) && bg=$SELBG mark="${AMBER}▌"
     ((i < 9)) && num=$((i + 1))
-    age "$since"
-    printf -v row '%s%s %s%s%s %s%s %-17.17s%s' "$bg" "$mark" "$DIM" "$num" "${R}${bg}" "$colour" "$glyph" "$window" "${R}${bg}"
+    [ "${L_state[i]}" = working ] && spin_at+=("$y;5;${bg:+1}")
+    age "${L_since[i]}"
+    printf -v row '%s%s %s%s%s %s%s %-17.17s%s' "$bg" "$mark" "$DIM" "$num" "${R}${bg}" "$colour" "$glyph" "${L_window[i]}" "${R}${bg}"
     out+=$row
-    if ((sesw)); then printf -v row ' %s%-12.12s%s' "$DIM" "$session" "${R}${bg}"; out+=$row; fi
-    printf -v row ' %s%-*.*s%s %s%7s %4s%s%s' "$TEXT" "$width" "$width" "$task" "${R}${bg}" "$DIM" "$harness" "$a" "$EOL" "$R"
+    if ((sesw)); then printf -v row ' %s%-12.12s%s' "$DIM" "${L_session[i]}" "${R}${bg}"; out+=$row; fi
+    printf -v row ' %s%-*.*s%s %s%7s %4s%s%s' "$TEXT" "$width" "$width" "${L_task[i]}" "${R}${bg}" "$DIM" "${L_harness[i]}" "$a" "$EOL" "$R"
     out+="$row"$'\n'
-    used=$((used + 1))
   done
 
   if ((n)); then
-    IFS="$US" read -r rank state session window id since harness task transcript sid <<<"${rows[sel]}"
-    age "$since"
-    head="${window} · ${state}${a:+ ${a}}${metrics:+ · ${metrics}}"
-    out+="${EOL}"$'\n'"  ${DIM}╭─ ${TEXT}${window}${MUTED} · ${state}${a:+ ${a}}${metrics:+ · ${metrics}} ${DIM}${rule:0:$((cols - ${#head} - 8))}${R}${EOL}"$'\n'
-    used=$((used + 2))
-    room=$((lines - used - 3))
+    age "${L_since[sel]}"
+    head="${L_window[sel]} · ${L_state[sel]}${a:+ ${a}}${metrics:+ · ${metrics}}"
+    out+="${EOL}"$'\n'"  ${DIM}╭─ ${TEXT}${L_window[sel]}${MUTED} · ${L_state[sel]}${a:+ ${a}}${metrics:+ · ${metrics}} ${DIM}${rule:0:$((cols - ${#head} - 8))}${R}${EOL}"$'\n'
+    y=$((y + 2))
+    room=$((lines - y - 3))
     ((room > ${#preview[@]})) && room=${#preview[@]}
     start=$((${#preview[@]} - room))
     for ((i = start; i < ${#preview[@]}; i++)); do out+="  ${DIM}│${R} ${preview[i]}${R}${EOL}"$'\n'; done
@@ -145,33 +168,54 @@ draw() {
   out+=$row
   if [ -n "$quota" ]; then printf -v row '%s[%d;%dH%s%s%s' "$E" "$lines" $((cols - ${#quota} - 1)) "$DIM" "$quota" "$R"; out+=$row; fi
   printf '%s' "$out"
+  dirty=0
+}
+
+# A spinner frame: rewrite only the spinner cells, a few bytes instead of a screen.
+spin() {
+  local p out='' r c s g=${SPIN[tick % 10]}
+  for p in ${spin_at[@]+"${spin_at[@]}"}; do
+    r=${p%%;*} c=${p#*;} s=${c#*;} c=${c%%;*}
+    out+="${E}[${r};${c}H${s:+$SELBG}${TEXT}${g}${R}"
+  done
+  [ -n "$out" ] && printf '%s' "$out"
 }
 
 jump() {
-  local id
-  IFS="$US" read -r _ _ _ _ id _ <<<"${rows[$1]}"
+  local id=${L_id[$1]}
   [ -n "$id" ] && tmux switch-client -t "$id" \; select-window -t "$id" \; select-pane -t "$id"
   exit 0
 }
 
-trap 'printf "%s[?25h%s[?7h" "$E" "$E"' EXIT
+moved() { # a new selection: its preview at once, its metrics shortly (a quick run of keys reads them once)
+  metrics='' dirty=1
+  peek
+  stats_due=$((tick + 2))
+}
+
+trap 'printf "%s[?25h%s[?7h" "$E" "$E"; rm -rf "$TMP"' EXIT
 trap 'resize' WINCH
 printf '%s[?25l%s[?7l' "$E" "$E" # hide the cursor; clip long preview lines instead of wrapping them
 
 # bash 4+ reads with a fractional timeout, so the spinner turns; the macOS bash 3.2 refreshes once a second.
-if ((BASH_VERSINFO[0] >= 4)); then FRAME=0.12 ESCWAIT=0.03 RELOAD=8; else FRAME=1 ESCWAIT=1 RELOAD=1; fi
+if ((BASH_VERSINFO[0] >= 4)); then FRAME=0.1 ESCWAIT=0.03 RELOAD=10; else FRAME=1 ESCWAIT=1 RELOAD=1; fi
 
 resize
 load
-refresh
+peek
+draw
+stats_start
 while :; do
-  draw
+  if ((dirty)); then draw; else spin; fi
   k=''
-  if ! IFS= read -rsn1 -t "$FRAME" k; then # no key: the next frame; about once a second, fresh lanes and preview
+  if ! IFS= read -rsn1 -t "$FRAME" k; then
     tick=$((tick + 1))
+    stats_poll
+    ((stats_due && tick >= stats_due)) && stats_due=0 && stats_start
     if ((tick % RELOAD == 0)); then
       load
-      if ((tick % (RELOAD * 5) == 0)); then refresh; else refresh rows-only; fi # metrics every ~5 s
+      peek
+      ((tick % (RELOAD * 5) == 0)) && stats_start # metrics every ~5 s
     fi
     continue
   fi
@@ -181,12 +225,12 @@ while :; do
     case $rest in '[A') k=e ;; '[B') k=n ;; '[C') k=i ;; '[D') k=h ;; *) exit 0 ;; esac
   fi
   case $k in
-    n | j) ((sel < ${#rows[@]} - 1)) && sel=$((sel + 1)) && refresh ;;
-    e | k) ((sel > 0)) && sel=$((sel - 1)) && refresh ;;
-    d) sel=0 && refresh ;;
-    D) sel=$((${#rows[@]} - 1)) && refresh ;;
-    i | '') ((${#rows[@]})) && jump "$sel" ;;
-    [1-9]) ((k <= ${#rows[@]})) && jump $((k - 1)) ;;
+    n | j) ((sel < ${#L_id[@]} - 1)) && sel=$((sel + 1)) && moved ;;
+    e | k) ((sel > 0)) && sel=$((sel - 1)) && moved ;;
+    d) ((sel != 0)) && sel=0 && moved ;;
+    D) ((sel != ${#L_id[@]} - 1)) && sel=$((${#L_id[@]} - 1)) && moved ;;
+    i | '') ((${#L_id[@]})) && jump "$sel" ;;
+    [1-9]) ((k <= ${#L_id[@]})) && jump $((k - 1)) ;;
     h | q) exit 0 ;;
   esac
 done
