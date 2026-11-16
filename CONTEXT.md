@@ -10,6 +10,7 @@ The words pitwall uses, and only those.
   - `idle`: finished and already seen, or never started.
   - `gone`: the agent exited; the window has a plain shell.
 - **Urgent**: an `asking` lane that has waited longer than `@pitwall-urgent-after` (ten minutes). Not a state of its own: a mark that clears when the lane moves on.
+- **Workspace**: a tmux session, holding the windows of one project or one kind of work. Moving a lane between workspaces moves its window; its agents keep running.
 - **Board**: the popup listing every lane, `asking` first, then `done`, then `working`, then the rest.
 - **Ref**: the short handle `@1`, `@2`… that `pitwall ls` prints, valid until the next `ls`. Agents act on refs, not on pane ids.
 - **Seat**: the OpenTimeline system identity pitwall reports signals with. It has `read` and `signal` only.

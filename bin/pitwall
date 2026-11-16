@@ -26,6 +26,8 @@ pitwall: see and steer coding agents from tmux
   pitwall done @N           review the lane's diff (lumen), then remove its worktree if you say so
   pitwall ot connect <token> [--url URL]      send lane states to OpenTimeline (status, flush, disconnect)
   pitwall ot bell <person-token>              Needs you's count in the status line (off to stop)
+  pitwall ws [new|go|rename|close] …          workspaces (tmux sessions): list them, or manage one
+  pitwall move <@N|window> <workspace>        move a lane's window, agents still running, to a workspace
   pitwall install [--write] show (or add) the hook lines for Claude Code and Codex
   pitwall doctor            what is missing; exits 1 when something is
   pitwall demo [stop]       a throwaway tmux server with fake lanes, to look at pitwall
@@ -127,6 +129,93 @@ cmd_quota() {
     IFS= read -r plain
     [ -n "$plain" ] && tmux set -g @pitwall_quota "$fmt" \; set -g @pitwall_quota_plain "$plain"
   }
+}
+
+# --- workspaces --------------------------------------------------------------------------------------------
+# A workspace is a tmux session. Moving a lane between workspaces is `move-window`: its agents keep running,
+# and their restore records follow them, so a crash brings them back where they now live.
+
+# Each workspace with its windows and its lanes by state: name attached windows asking done working idle.
+workspaces() {
+  counts=$(lanes 2>/dev/null | awk -F '\t' '{ n[$3 FS $2]++ } END { for (k in n) print k FS n[k] }')
+  tmux list-sessions -F '#{session_name}	#{session_attached}	#{session_windows}' | while IFS="$TAB" read -r name attached windows; do
+    printf '%s\n' "$counts" | awk -F '\t' -v s="$name" -v a="$attached" -v w="$windows" -v OFS='\t' '
+      $1 == s { c[$2] = $3 } END { print s, a, w, c["asking"] + 0, c["done"] + 0, c["working"] + 0, c["idle"] + c["gone"] + 0 }'
+  done
+}
+
+# The restore records of a window's agents now point where the window lives.
+follow() {
+  tmux list-panes -t "$1" -F '#{@pitwall_session}	#{session_name}	#{window_index}	#{window_name}	#{pane_index}' 2>/dev/null |
+    while IFS="$TAB" read -r sid sname widx wname pidx; do
+      f="$STATE/lanes/$sid"
+      [ -n "$sid" ] && [ -f "$f" ] || continue
+      awk -F '\t' -v OFS='\t' -v s="$sname" -v w="$widx" -v n="$wname" -v p="$pidx" '{ $4 = s; $5 = w; $6 = n; $7 = p; print }' "$f" >"$f.tmp" && mv -f "$f.tmp" "$f"
+    done
+}
+
+# Move a window (by id) to a workspace, creating it if needed.
+move_window() {
+  win=$1 ws=$2
+  name=$(tmux display -p -t "$win" '#{window_name}') || { echo "pitwall: no such window" >&2; return 1; }
+  if tmux has-session -t "=$ws" 2>/dev/null; then
+    tmux move-window -d -s "$win" -t "=$ws:"
+  else
+    # A new session starts with a shell window: the moved window takes its place.
+    placeholder=$(tmux new-session -d -P -F '#{window_index}' -s "$ws" -c "$(tmux display -p -t "$win" '#{pane_current_path}')")
+    tmux move-window -d -k -s "$win" -t "=$ws:$placeholder"
+    created=" (new workspace)"
+  fi
+  follow "$win"
+  echo "moved $name to $ws${created:-}"
+}
+
+cmd_move() {
+  src=${1:?usage: pitwall move <@N|window|session:window> <workspace>}
+  ws=${2:?usage: pitwall move <@N|window|session:window> <workspace>}
+  case $src in
+    @*) win=$(tmux display -p -t "$(resolve "$src")" '#{window_id}') ;;
+    *:*) win=$(tmux display -p -t "=$src" '#{window_id}' 2>/dev/null) ;;
+    *)
+      win=$(tmux list-windows -a -F '#{window_id}	#{window_name}' | awk -F '\t' -v n="$src" '$2 == n { print $1 }')
+      case $win in *[[:space:]]*) echo "pitwall: more than one window is called $src; use <session>:$src" >&2; exit 1 ;; esac
+      ;;
+  esac
+  [ -n "$win" ] || { echo "pitwall: no window $src" >&2; exit 1; }
+  move_window "$win" "$ws"
+}
+
+cmd_ws() {
+  case ${1:-ls} in
+    ls)
+      workspaces | awk -F '\t' '{
+        lanes = ""
+        if ($4) lanes = lanes "◆" $4 " "; if ($5) lanes = lanes "✓" $5 " "; if ($6) lanes = lanes "⠙" $6 " "; if ($7) lanes = lanes "○" $7 " "
+        printf "%s %-18s %2d window%s  %s\n", ($2 > 0 ? "●" : " "), $1, $3, ($3 == 1 ? " " : "s"), lanes }'
+      ;;
+    new)
+      ws=${2:?usage: pitwall ws new <name> [dir]}
+      tmux new-session -d -s "$ws" -c "${3:-$HOME}" && echo "workspace $ws"
+      ;;
+    go) tmux switch-client -t "=${2:?usage: pitwall ws go <name>}" ;;
+    rename)
+      old=${2:?usage: pitwall ws rename <old> <new>} new=${3:?usage: pitwall ws rename <old> <new>}
+      tmux rename-session -t "=$old" "$new" || exit 1
+      for w in $(tmux list-windows -t "=$new" -F '#{window_id}'); do follow "$w"; done
+      echo "workspace $old is now $new"
+      ;;
+    close)
+      ws=${2:?usage: pitwall ws close <name>}
+      busy=$(lanes | awk -F '\t' -v s="$ws" '$3 == s && $2 != "gone"' | wc -l | tr -d ' ')
+      if [ "$busy" != 0 ] && [ "${3:-}" != --force ]; then
+        echo "pitwall: $ws has $busy agent lane(s); move them first, or close with --force (their agents stop)" >&2
+        exit 1
+      fi
+      tmux kill-session -t "=$ws" && echo "closed $ws"
+      ;;
+    _rows) workspaces ;;
+    *) echo "usage: pitwall ws [ls] | new <name> [dir] | go <name> | rename <old> <new> | close <name> [--force]" >&2; exit 1 ;;
+  esac
 }
 
 # --- OpenTimeline ------------------------------------------------------------------------------------------
@@ -411,6 +500,10 @@ cmd_demo() {
   pane "$p" asking claude 60 "Review the Linear sync diff"
   $T send-keys -t "$p" "clear; printf '\n  ⏺ Bash(pnpm --filter @ait/linear lint)\n\n  Do you want to proceed?\n  ❯ 1. Yes\n    2. No\n'" Enter
   $T new-window -t lab -n notes
+  # A second workspace, so moving lanes and the workspace picker have somewhere to go.
+  $T new-session -d -s oss -n malock -x 160 -y 40
+  pane oss:malock asking codex 300 "Publish the 2.0 release notes"
+  $T send-keys -t oss:malock "clear; printf '\n  • Ran npm publish --dry-run\n\n  Allow command?  › 1. Yes   2. No\n'" Enter
   $T select-window -t lab:dotfiles
   $T run-shell "'$DIR/pitwall.tmux'"
   # Lanes move on their own so you can watch: ait finishes in 15 s while you look elsewhere, then a new lane starts.
@@ -438,6 +531,9 @@ case ${1:-} in
   new) shift; cmd_new "$@" ;;
   done) shift; cmd_done "$@" ;;
   _done) shift; cmd__done "$@" ;;
+  ws) shift; cmd_ws "$@" ;;
+  move) shift; cmd_move "$@" ;;
+  _move) shift; move_window "$@" ;;
   ot) shift; cmd_ot "$@" ;;
   _escalate) shift; cmd__escalate "$@" ;;
   install) shift; cmd_install "${1:-}" ;;

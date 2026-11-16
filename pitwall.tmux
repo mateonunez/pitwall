@@ -12,6 +12,7 @@ GONE=$(opt @pitwall-color-gone '#fb2c36')
 KEY_BOARD=$(opt @pitwall-key-board 'A')
 KEY_NEXT=$(opt @pitwall-key-next 'a')
 KEY_RESTORE=$(opt @pitwall-key-restore 'R')
+KEY_WORKSPACES=$(opt @pitwall-key-workspaces 'W')
 
 AGENT='^(codex|claude|[0-9.]+)$' # Claude Code shows up as its version, e.g. 2.1.323
 
@@ -33,8 +34,10 @@ glyph() { # $1 asking style, $2 done style, $3 gone style
 ASKING='#{?#{m:*1*,#{P:#{@pitwall_urgent} }},#[fg='"$GONE"' bold],#[fg='"$ASK"' bold]}'
 tmux set -g @pitwall-glyph "$(glyph "$ASKING" "#[fg=$DONE bold]" "#[fg=$GONE]")"
 tmux set -g @pitwall-glyph-plain "$(glyph '' '' '')"
-# Right side: lanes that need you, lanes waiting to be restored after a crash, then the usage limits.
-tmux set -g @pitwall-summary "#{W:#{P:#{?#{==:$S,asking},#[fg=$ASK bold]◆ ,}#{?#{==:$S,done},#[fg=$DONE bold]✓ ,}}}#[nobold]#{?#{&&:#{@pitwall_restorable},#{!=:#{@pitwall_restorable},0}},#[fg=$ASK]↺ #{@pitwall_restorable}  ,}#{?#{&&:#{@pitwall_bell},#{!=:#{@pitwall_bell},0}},#[fg=$ASK bold]⚑ #{@pitwall_bell}#[nobold]  ,}#{?#{@pitwall_quota},#{@pitwall_quota}  ,}"
+# Right side: other workspaces with a lane that needs you, this workspace's lanes that do, lanes waiting to be
+# restored after a crash, Needs you's count, then the usage limits.
+OTHERS="#{S:#{?#{!=:#{session_name},#{client_session}},#{?#{m:*asking*,#{W:#{P:$S }}},#[fg=$ASK bold]◆ #{session_name}#[nobold]  ,#{?#{m:*done*,#{W:#{P:$S }}},#[fg=$DONE]✓ #{session_name}  ,}},}}"
+tmux set -g @pitwall-summary "$OTHERS#{W:#{P:#{?#{==:$S,asking},#[fg=$ASK bold]◆ ,}#{?#{==:$S,done},#[fg=$DONE bold]✓ ,}}}#[nobold]#{?#{&&:#{@pitwall_restorable},#{!=:#{@pitwall_restorable},0}},#[fg=$ASK]↺ #{@pitwall_restorable}  ,}#{?#{&&:#{@pitwall_bell},#{!=:#{@pitwall_bell},0}},#[fg=$ASK bold]⚑ #{@pitwall_bell}#[nobold]  ,}#{?#{@pitwall_quota},#{@pitwall_quota}  ,}"
 
 # Put the glyph before the window name in whatever format the theme already has.
 inject() { # $1 option, $2 glyph option
@@ -71,6 +74,7 @@ BASH_BIN=bash
 for b in /opt/homebrew/bin/bash /usr/local/bin/bash; do [ -x "$b" ] && BASH_BIN=$b && break; done
 tmux bind "$KEY_BOARD" display-popup -E -w 84% -h 78% -b rounded -S "fg=#404040" "'$BASH_BIN' '$DIR/bin/pitwall-board'"
 tmux bind "$KEY_NEXT" run-shell "'$DIR/bin/pitwall' next"
+tmux bind "$KEY_WORKSPACES" display-popup -E -w 60% -h 50% -b rounded -S "fg=#404040" "'$BASH_BIN' '$DIR/bin/pitwall-ws'"
 tmux bind "$KEY_RESTORE" display-popup -E -w 70% -h 50% -b rounded -S "fg=#404040" "'$DIR/bin/pitwall' _restore-prompt"
 
 # Lanes may already be working when the plugin loads (or a client attaches): start the spinner.

@@ -167,4 +167,21 @@ eq "leaving asking is reported too, with attention none" "$(tail -1 "$PENDING" |
 TMUX="$SOCK,0,0" "$ROOT/bin/pitwall-signal" "$P2" 10m asking urgent
 eq "an escalation is sent as urgent" "$(tail -1 "$PENDING" | python3 -I -c 'import json,sys; s=json.load(sys.stdin); print(s["state"], s["attention"], s["summary"])')" "asking urgent s/two: still asking after 10m"
 
+# --- workspaces: a lane moves to another session and keeps running ---------------------------------------------
+eq "workspaces list each session with its lanes" "$(pw ws | grep -c ' s ')" 1
+$T set -p -t "$P2" @pitwall_state asking \; set -p -t "$P2" @pitwall_session s-move
+mkdir -p "$XDG_STATE_HOME/pitwall/lanes"
+printf 'claude\ts-move\t/tmp\ts\t2\ttwo\t0\t%s\t%s\n' "$($T display -p '#{pid}')" "$(date +%s)" >"$XDG_STATE_HOME/pitwall/lanes/s-move"
+pw move two lab >/dev/null
+eq "the window moved to a new workspace" "$($T display -p -t "$P2" '#{session_name}:#{window_name}')" "lab:two"
+eq "the new workspace holds only the moved window" "$($T list-windows -t '=lab' | wc -l | tr -d ' ')" 1
+eq "its agent kept running, with its state" "$($T display -p -t "$P2" '#{@pitwall_state}')" asking
+eq "its restore record follows it" "$(cut -f4 "$XDG_STATE_HOME/pitwall/lanes/s-move")" lab
+eq "another workspace that needs you shows in the status line" "$($T display -p -t s:one '#{E:@pitwall-summary}' | grep -c '◆ lab')" 1
+eq "a workspace with agents is not closed by accident" "$(pw ws close lab 2>/dev/null; $T has-session -t '=lab' && echo kept)" kept
+pw ws rename lab oss >/dev/null
+eq "renaming a workspace keeps its records in step" "$(cut -f4 "$XDG_STATE_HOME/pitwall/lanes/s-move")" oss
+pw move "oss:two" s >/dev/null
+eq "and the lane can come back" "$($T display -p -t "$P2" '#{session_name}')" s
+
 exit $fail

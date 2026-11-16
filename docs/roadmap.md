@@ -15,6 +15,7 @@ Where pitwall goes next, and the rules it keeps on the way.
 - **Restore.** The hook keeps one record per agent session; after tmux dies, `prefix R` or `pitwall restore` rebuilds sessions, windows and panes and resumes each agent.
 - **Lanes as worktrees.** `pitwall new` and `pitwall done`, on [gwm](https://github.com/kbrdn1/gwm) and [lumen](https://github.com/jnsahaj/lumen).
 - **Needs you, beyond the terminal.** `lane.state` signals to [OpenTimeline](https://github.com/mateonunez/opentimeline) through a system seat, with the lane's metrics; the credential renews itself.
+- **Workspaces (prototype).** tmux sessions as workspaces: `prefix W`, `m` in the board, `pitwall move`, other workspaces that need you in the status line.
 - **Urgent after a while, and the bell.** A lane asking for ten minutes turns red and is sent as `urgent`; Needs you's count can sit in the status line.
 - **Context on every lane.** Model, context and tokens from each agent's transcript; [CodexBar](https://github.com/steipete/CodexBar) usage limits in the status line.
 

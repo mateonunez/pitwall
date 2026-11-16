@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # pitwall board: every lane, grouped by what needs you, with a live preview of the selected one.
-# Keys follow Colemak + vim: n/e down/up, i or ⏎ jump in, h/q/esc close, d/D first/last, 1-9 jump straight.
+# Keys follow Colemak + vim: n/e down/up, i or ⏎ jump in, h/q/esc close, d/D first/last, 1-9 jump straight,
+# m move the lane's window to another workspace (its agents keep running).
 # Runs inside `display-popup -E`, with the newest bash pitwall.tmux finds; it still works on the macOS bash 3.2
 # (always ${VAR} before a non-ASCII glyph).
 #
@@ -19,7 +20,7 @@ SPIN=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/pitwall-board.XXXXXX")
 
 sel=0 tick=0 sessions=0 cols=80 lines=24 now=0 dirty=1 sig='' psig=''
-metrics='' metrics_for='' stats_pid='' stats_due=0 quota='' rule='' keys=''
+metrics='' metrics_for='' stats_pid='' stats_due=0 quota='' rule='' keys='' keys_len=0
 L_state=() L_session=() L_window=() L_id=() L_since=() L_harness=() L_task=() L_transcript=() L_sid=() L_urgent=()
 preview=() spin_at=() # spin_at: "row;col;selected" for every spinner cell of the last full draw
 
@@ -27,9 +28,10 @@ resize() {
   cols=$(tput cols) lines=$(tput lines)
   rule=$(printf '%*s' "$cols" '' | tr ' ' '─')
   local k
-  keys=''
-  for k in 'n e:move' 'i ⏎:jump' '1-9:pick' 'd D:first/last' 'h q:close'; do
+  keys='' keys_len=2
+  for k in 'n e:move' 'i ⏎:jump' '1-9:pick' 'm:to workspace' 'h q:close'; do
     keys+="${CHIP}${TEXT} ${k%%:*} ${R} ${MUTED}${k#*:}${R}   "
+    keys_len=$((keys_len + ${#k} + 5)) # what the chips take on screen, so the limits never draw over them
   done
   printf '%s[2J' "$E"
   dirty=1
@@ -167,7 +169,7 @@ draw() {
   out+="${E}[J"
   printf -v row '%s[%d;1H  %s' "$E" "$lines" "$keys"
   out+=$row
-  if [ -n "$quota" ]; then printf -v row '%s[%d;%dH%s%s%s' "$E" "$lines" $((cols - ${#quota} - 1)) "$DIM" "$quota" "$R"; out+=$row; fi
+  if [ -n "$quota" ] && ((cols - keys_len - ${#quota} > 2)); then printf -v row '%s[%d;%dH%s%s%s' "$E" "$lines" $((cols - ${#quota} - 1)) "$DIM" "$quota" "$R"; out+=$row; fi
   printf '%s' "$out"
   dirty=0
 }
@@ -231,6 +233,13 @@ while :; do
     d) ((sel != 0)) && sel=0 && moved ;;
     D) ((sel != ${#L_id[@]} - 1)) && sel=$((${#L_id[@]} - 1)) && moved ;;
     i | '') ((${#L_id[@]})) && jump "$sel" ;;
+    m)
+      if ((${#L_id[@]})); then
+        "$(dirname "$PITWALL")/pitwall-ws" move "$(tmux display -p -t "${L_id[sel]}" '#{window_id}')" "${L_window[sel]}"
+        printf '%s[?25l%s[?7l' "$E" "$E"
+        resize; load; peek
+      fi
+      ;;
     [1-9]) ((k <= ${#L_id[@]})) && jump $((k - 1)) ;;
     h | q) exit 0 ;;
   esac

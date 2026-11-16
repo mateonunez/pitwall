@@ -46,12 +46,13 @@ Restart your agents so they pick up the hooks; Codex asks you to trust each new 
 
 - **A status line that says who needs you.** `◆` amber: the agent is asking you something. `✓` green: it finished while you were elsewhere, and stays until you visit. A spinner while it works, `○` when it rests, `✗` when it has gone. I slip the glyph in front of the window name inside the format your theme already has, so your theme stays yours.
 - **Instant, and quiet when nothing moves.** A change redraws every status line at once and shows a short toast to anyone not already looking at that lane. The spinner turns only while something works, then the ticker exits.
-- **The board.** `prefix A` groups lanes into Needs you, Working and Idle, with a live preview of the selected pane. Keys are Colemak and vim: `n` `e` to move, `i` or `⏎` to jump in, `1`–`9` to pick, `d` `D` for first and last, `h` `q` `esc` to close. Arrows work too.
+- **The board.** `prefix A` groups lanes into Needs you, Working and Idle, with a live preview of the selected pane. Keys are Colemak and vim: `n` `e` to move, `i` or `⏎` to jump in, `1`–`9` to pick, `d` `D` for first and last, `m` to move the lane to another workspace, `h` `q` `esc` to close. Arrows work too.
 - **The jump.** `prefix a` takes you to the next lane that is asking or done. Press it again to cycle.
 - **Several agents in one window.** Each pane is its own lane (`ait.1`, `ait.2`); the window shows the most urgent of them.
 - **Names that mean something.** A window running Claude Code shows up as `2.1.323`; I name it after the agent's directory instead.
 - **Your agents survive a dead tmux.** Every agent session leaves a small record as it works. When the tmux server dies, the status line says `↺ 4` next time, and `prefix R` (or `pitwall restore` from any terminal) rebuilds the sessions, windows and panes and resumes each agent where it was. An agent you closed on purpose stays closed.
 - **Context on every lane.** The board's preview names the model, how full the context is and how many tokens the session has used, read from the agent's own transcript; `pitwall stats` prints it for all lanes. Your Claude and Codex usage limits sit in the status line with the time left to each reset (`claude 5h 8% ↻4h · wk 34% ↻5d`), from [CodexBar](https://github.com/steipete/CodexBar), refreshed when a turn ends. A number turns amber at 80%, and so does a week on course to run out before its reset.
+- **Workspaces.** A workspace is a tmux session. `prefix W` lists them with their lanes' states, takes you to one, creates or renames one. In the board, `m` moves a lane's window to another workspace, or a new one, and its agents keep running; `pitwall move farm qa` does it from the shell. The status line names other workspaces that need you (`◆ qa`), and restore puts lanes back where they now live.
 - **Lanes as worktrees.** `pitwall new fix-login` makes a worktree with [gwm](https://github.com/kbrdn1/gwm), opens a window there and starts your agent. `pitwall done @3` shows the diff in [lumen](https://github.com/jnsahaj/lumen), and removes the worktree only if you say so.
 - **Nothing waits unnoticed.** A lane that has been asking for ten minutes turns its `◆` red and shows a toast; there is no polling, just one delayed check scheduled when it starts asking.
 - **Needs you, beyond the terminal.** Connect an [OpenTimeline](https://github.com/mateonunez/opentimeline) system seat with `pitwall ot connect <token-file>` and a lane that starts asking shows up in its Needs you, turns urgent after ten minutes, and clears when the lane moves on. Signals carry the state, the agent and its metrics, never prompts or task titles. With `pitwall ot bell <token-file>`, Needs you's count sits in the status line (`⚑ 3`).
@@ -64,6 +65,7 @@ Restart your agents so they pick up the hooks; Codex asks you to trust each new 
 | `prefix A` | The board |
 | `prefix a` | Next lane that needs you |
 | `prefix R` | Restore the lanes a dead tmux took with it |
+| `prefix W` | Workspaces: go to one, create or rename one |
 
 | Command | Does |
 | --- | --- |
@@ -77,6 +79,8 @@ Restart your agents so they pick up the hooks; Codex asks you to trust each new 
 | `pitwall saved` | The lanes pitwall can bring back, and which are running or closed |
 | `pitwall restore [--dry\|--all]` | Reopen them, resuming each agent |
 | `pitwall forget <id>` | Drop a saved lane |
+| `pitwall ws` | Workspaces with their lanes; also `new <name> [dir]`, `go`, `rename <old> <new>`, `close <name>` |
+| `pitwall move <@N\|window> <workspace>` | Move a lane's window, agents still running, to a workspace (created if new) |
 | `pitwall ot connect <token> [--url URL]` | Send lane states to OpenTimeline; also `status`, `flush`, `disconnect` |
 | `pitwall ot bell <token>` | Needs you's count in the status line; `off` to stop |
 | `pitwall new <name> [--agent codex]` | Worktree, window and agent in one go |
@@ -94,6 +98,7 @@ Set them before the plugin loads, like any tmux option.
 | `@pitwall-key-board` | `A` | Key for the board |
 | `@pitwall-key-next` | `a` | Key for the jump |
 | `@pitwall-key-restore` | `R` | Key for restore |
+| `@pitwall-key-workspaces` | `W` | Key for workspaces |
 | `@pitwall-agent` | `claude` | Agent `pitwall new` starts |
 | `@pitwall-resume-claude` · `-codex` | `claude --resume {id}` · `codex resume {id}` | How a saved session resumes |
 | `@pitwall-quota` | `on` | Usage limits in the status line |
