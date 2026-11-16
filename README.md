@@ -53,7 +53,8 @@ Restart your agents so they pick up the hooks; Codex asks you to trust each new 
 - **Your agents survive a dead tmux.** Every agent session leaves a small record as it works. When the tmux server dies, the status line says `↺ 4` next time, and `prefix R` (or `pitwall restore` from any terminal) rebuilds the sessions, windows and panes and resumes each agent where it was. An agent you closed on purpose stays closed.
 - **Context on every lane.** The board's preview names the model, how full the context is and how many tokens the session has used, read from the agent's own transcript; `pitwall stats` prints it for all lanes. Your Claude and Codex usage limits sit in the status line with the time left to each reset (`claude 5h 8% ↻4h · wk 34% ↻5d`), from [CodexBar](https://github.com/steipete/CodexBar), refreshed when a turn ends. A number turns amber at 80%, and so does a week on course to run out before its reset.
 - **Lanes as worktrees.** `pitwall new fix-login` makes a worktree with [gwm](https://github.com/kbrdn1/gwm), opens a window there and starts your agent. `pitwall done @3` shows the diff in [lumen](https://github.com/jnsahaj/lumen), and removes the worktree only if you say so.
-- **Needs you, beyond the terminal.** Connect an [OpenTimeline](https://github.com/mateonunez/opentimeline) system seat with `pitwall ot connect <token-file>` and a lane that starts asking shows up in its Needs you, then clears when the lane moves on. Signals carry the state, the agent and its metrics, never prompts or task titles.
+- **Nothing waits unnoticed.** A lane that has been asking for ten minutes turns its `◆` red and shows a toast; there is no polling, just one delayed check scheduled when it starts asking.
+- **Needs you, beyond the terminal.** Connect an [OpenTimeline](https://github.com/mateonunez/opentimeline) system seat with `pitwall ot connect <token-file>` and a lane that starts asking shows up in its Needs you, turns urgent after ten minutes, and clears when the lane moves on. Signals carry the state, the agent and its metrics, never prompts or task titles. With `pitwall ot bell <token-file>`, Needs you's count sits in the status line (`⚑ 3`).
 - **Made for agents as well.** `pitwall ls` prints one line per lane with a ref (`@1 lab/opentimeline asking 3m codex Cut the 0.2.0 release`), `--json` for scripts, and `pitwall peek @1` shows that lane's last lines. An orchestrator reads your whole fleet with one call.
 
 ## Keys and commands
@@ -77,6 +78,7 @@ Restart your agents so they pick up the hooks; Codex asks you to trust each new 
 | `pitwall restore [--dry\|--all]` | Reopen them, resuming each agent |
 | `pitwall forget <id>` | Drop a saved lane |
 | `pitwall ot connect <token> [--url URL]` | Send lane states to OpenTimeline; also `status`, `flush`, `disconnect` |
+| `pitwall ot bell <token>` | Needs you's count in the status line; `off` to stop |
 | `pitwall new <name> [--agent codex]` | Worktree, window and agent in one go |
 | `pitwall done @N` | Review the diff, then remove the worktree if you confirm |
 | `pitwall install [--write]` | The hook lines for Claude Code and Codex |
@@ -99,6 +101,7 @@ Set them before the plugin loads, like any tmux option.
 | `@pitwall-color-asking` · `-done` · `-gone` | `#f59e0b` · `#00c758` · `#fb2c36` | Glyph colours |
 | `@pitwall-rename` | `on` | Name agent windows after their directory |
 | `@pitwall-toast` | `on` | Toast when a lane starts asking or finishes |
+| `@pitwall-urgent-after` | `600` | Seconds of asking before a lane turns urgent; `0` turns it off |
 | `@pitwall-tick-interval` | `0.12` | Seconds per spinner frame |
 
 ## How it fits together

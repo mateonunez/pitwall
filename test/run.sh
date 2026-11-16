@@ -85,6 +85,24 @@ eq "ls lists both panes as lanes" "$(TMUX="$SOCK,0,0" "$ROOT/bin/pitwall" ls | a
 hook "$P3" Stop
 eq "visiting a window clears every done pane in it" "$($T select-window -t s:two \; select-window -t s:one; sleep 0.3; $T display -p -t "$P3" '#{@pitwall_state}')" idle
 
+# --- a lane asking for too long becomes urgent, with one delayed check and no polling --------------------------
+$T set -g @pitwall-urgent-after 1
+hook "$P2" PostToolUse
+hook "$P2" PermissionRequest
+i=0; while [ -z "$($T display -p -t "$P2" '#{@pitwall_urgent}')" ] && [ $i -lt 40 ]; do sleep 0.1; i=$((i + 1)); done
+eq "still asking after the wait → urgent" "$($T display -p -t "$P2" '#{@pitwall_urgent}')" 1
+eq "the window's ◆ turns red" "$($T display -p -t s:two '#{E:@pitwall-glyph}' | grep -c 'fg=#fb2c36 bold]◆')" 1
+hook "$P2" PostToolUse
+eq "moving on clears urgent" "$($T display -p -t "$P2" '#{?#{@pitwall_urgent},set,clear}')" clear
+hook "$P2" PermissionRequest
+hook "$P2" PostToolUse
+sleep 1.6
+eq "a lane that moved before the wait is not escalated" "$($T display -p -t "$P2" '#{?#{@pitwall_urgent},set,clear}')" clear
+$T set -g @pitwall-urgent-after 0
+$T set -g @pitwall_bell 3
+eq "Needs you's count shows in the status line" "$($T display -p -t s:two '#{E:@pitwall-summary}' | grep -c '⚑ 3')" 1
+$T set -gu @pitwall_bell
+
 # --- save and restore, with a throwaway state directory ----------------------------------------------------
 LANES="$XDG_STATE_HOME/pitwall/lanes"
 pw() { TMUX="$SOCK,0,0" "$ROOT/bin/pitwall" "$@"; }
@@ -146,5 +164,7 @@ $T set -p -t "$P2" @pitwall_state asking
 hook "$P2" PostToolUse # leaving asking: the hook sends the change in the background
 i=0; while [ "$(wc -l <"$PENDING" | tr -d ' ')" != 2 ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
 eq "leaving asking is reported too, with attention none" "$(tail -1 "$PENDING" | python3 -I -c 'import json,sys; s=json.load(sys.stdin); print(s["state"], s["attention"])')" "working none"
+TMUX="$SOCK,0,0" "$ROOT/bin/pitwall-signal" "$P2" 10m asking urgent
+eq "an escalation is sent as urgent" "$(tail -1 "$PENDING" | python3 -I -c 'import json,sys; s=json.load(sys.stdin); print(s["state"], s["attention"], s["summary"])')" "asking urgent s/two: still asking after 10m"
 
 exit $fail

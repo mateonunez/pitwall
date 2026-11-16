@@ -25,6 +25,7 @@ pitwall: see and steer coding agents from tmux
   pitwall new <name> [--agent claude|codex]   a worktree (gwm), a window there and an agent in it
   pitwall done @N           review the lane's diff (lumen), then remove its worktree if you say so
   pitwall ot connect <token> [--url URL]      send lane states to OpenTimeline (status, flush, disconnect)
+  pitwall ot bell <person-token>              Needs you's count in the status line (off to stop)
   pitwall install [--write] show (or add) the hook lines for Claude Code and Codex
   pitwall doctor            what is missing; exits 1 when something is
   pitwall demo [stop]       a throwaway tmux server with fake lanes, to look at pitwall
@@ -37,7 +38,7 @@ EOF
 lanes() {
   fmt=$(tmux show -gqv @pitwall-state-fmt)
   [ -n "$fmt" ] || { echo "pitwall: not loaded in this tmux server (run pitwall.tmux)" >&2; exit 1; }
-  tmux list-panes -a -F "#{E:@pitwall-state-fmt}	#{session_name}	#{window_name}#{?#{>:#{window_panes},1},.#{pane_index},}	#{pane_id}	#{@pitwall_since}	#{?#{@pitwall_harness},#{@pitwall_harness},#{?#{==:#{pane_current_command},codex},codex,#{?#{m/r:^(claude|[0-9.]+)$,#{pane_current_command}},claude,}}}	#{pane_title}	#{@pitwall_transcript}	#{@pitwall_session}" |
+  tmux list-panes -a -F "#{E:@pitwall-state-fmt}	#{session_name}	#{window_name}#{?#{>:#{window_panes},1},.#{pane_index},}	#{pane_id}	#{@pitwall_since}	#{?#{@pitwall_harness},#{@pitwall_harness},#{?#{==:#{pane_current_command},codex},codex,#{?#{m/r:^(claude|[0-9.]+)$,#{pane_current_command}},claude,}}}	#{pane_title}	#{@pitwall_transcript}	#{@pitwall_session}	#{?#{@pitwall_urgent},urgent,-}" |
     awk -F '\t' 'BEGIN { OFS = "\t"; split("asking done working idle gone", o, " "); for (i in o) rank[o[i]] = i }
       $1 != "" {
         t = $7; sub(/^\[ [^]]* \] Action Required \| /, "", t)  # Codex waiting for you (it blinks "[ ! ]" / "[ . ]")
@@ -108,7 +109,7 @@ cmd_stats() {
   rows=$(lanes)
   [ -n "${1:-}" ] && rows=$(printf '%s\n' "$rows" | awk -v n="${1#@}" 'NR == n')
   US=$(printf '\037') # not a tab: `read` merges consecutive tabs, so an empty field would shift the rest
-  printf '%s\n' "$rows" | awk 'NF' | tr '\t' '\037' | while IFS="$US" read -r _ state session window _ _ harness _ transcript sid; do
+  printf '%s\n' "$rows" | awk 'NF' | tr '\t' '\037' | while IFS="$US" read -r _ state session window _ _ harness _ transcript sid _; do
     printf '%s\t%s\t%s\t%s\n' "$session/$window" "$state" "$harness" "$("$DIR/bin/pitwall-stats" "$harness" "$transcript" "$sid")"
   done | awk -F '\t' 'BEGIN { printf "%-22s %-8s %-7s %-22s %6s %9s %9s\n", "LANE", "STATE", "AGENT", "MODEL", "CTX", "TOKENS", "OUT" }
     { printf "%-22s %-8s %-7s %-22s %6s %9s %9s\n", $1, $2, $3, ($4 == "" ? "—" : $4), ($5 == "" ? "—" : $5 "%"), ($8 == "" ? "—" : $8), ($9 == "" ? "—" : $9) }'
@@ -130,10 +131,33 @@ cmd_quota() {
 
 # --- OpenTimeline ------------------------------------------------------------------------------------------
 
-# ot connect <token-file> [--url URL] | status | flush | disconnect. The token is a system seat's credential.
+# ot connect <token-file> [--url URL] | status | flush | disconnect | bell <person-token-file> | bell --refresh.
+# The seat's token reports signals. Needs you belongs to a person, so its count needs that person's token (bell).
 cmd_ot() {
   conf=${XDG_CONFIG_HOME:-$HOME/.config}/pitwall/opentimeline
+  bellconf=${XDG_CONFIG_HOME:-$HOME/.config}/pitwall/opentimeline-bell
   case ${1:-status} in
+    bell)
+      case ${2:-} in
+        --refresh)
+          [ -f "$bellconf" ] || return 0
+          tmux set -g @pitwall_bell_at "$(date +%s)"
+          url=$(head -1 "$conf" 2>/dev/null || echo http://127.0.0.1:4431)
+          n=$(curl -fsS -m 5 -H "authorization: Bearer $(cat "$(cat "$bellconf")")" "$url/v1/attention" 2>/dev/null |
+            python3 -I -c 'import json,sys; d=json.load(sys.stdin); print(len(d.get("items", d) if isinstance(d, dict) else d))' 2>/dev/null) || return 0
+          tmux set -g @pitwall_bell "$n"
+          ;;
+        off) rm -f "$bellconf"; tmux set -gu @pitwall_bell; echo "opentimeline: bell off" ;;
+        '') echo "usage: pitwall ot bell <person-token-file> | --refresh | off" >&2; exit 1 ;;
+        *)
+          [ -f "$2" ] || { echo "pitwall: no token file at $2" >&2; exit 1; }
+          mkdir -p "$(dirname "$bellconf")"
+          printf '%s\n' "$(cd "$(dirname "$2")" && pwd)/$(basename "$2")" >"$bellconf"
+          cmd_ot bell --refresh
+          echo "opentimeline: bell on, Needs you has $(tmux show -gqv @pitwall_bell 2>/dev/null || echo ?) item(s)"
+          ;;
+      esac
+      ;;
     connect)
       file=${2:?usage: pitwall ot connect <token-file> [--url URL]}
       [ -f "$file" ] || { echo "pitwall: no token file at $file" >&2; exit 1; }
@@ -148,6 +172,18 @@ cmd_ot() {
     disconnect) rm -f "$conf" && echo "opentimeline: disconnected" ;;
     *) echo "usage: pitwall ot connect <token-file> [--url URL] | status | flush | disconnect" >&2; exit 1 ;;
   esac
+}
+
+# _escalate <pane> <since>: the hook's ten-minute check. Still asking since then: red in tmux, urgent in OpenTimeline.
+cmd__escalate() {
+  pane=$1 since=$2
+  [ "$(tmux display -p -t "$pane" '#{@pitwall_state} #{@pitwall_since}' 2>/dev/null)" = "asking $since" ] || return 0
+  name=$(tmux display -p -t "$pane" '#{window_name}#{?#{>:#{window_panes},1},.#{pane_index},}')
+  mins=$((($(date +%s) - since) / 60))
+  tmux set -p -t "$pane" @pitwall_urgent 1
+  for c in $(tmux list-clients -F '#{client_name}'); do tmux refresh-client -S -t "$c" \; display-message -c "$c" -d 4000 "◆ $name has waited ${mins}m"; done
+  [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/pitwall/opentimeline" ] && "$DIR/bin/pitwall-signal" "$pane" "${mins}m" asking urgent
+  return 0
 }
 
 # --- save and restore --------------------------------------------------------------------------------------
@@ -403,6 +439,7 @@ case ${1:-} in
   done) shift; cmd_done "$@" ;;
   _done) shift; cmd__done "$@" ;;
   ot) shift; cmd_ot "$@" ;;
+  _escalate) shift; cmd__escalate "$@" ;;
   install) shift; cmd_install "${1:-}" ;;
   doctor) cmd_doctor ;;
   demo) shift; cmd_demo "${1:-}" ;;

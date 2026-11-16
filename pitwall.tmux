@@ -28,10 +28,13 @@ glyph() { # $1 asking style, $2 done style, $3 gone style
   printf '%s' "#{?#{==:$W,asking},$1◆ ,#{?#{==:$W,done},$2✓ ,#{?#{==:$W,working},#{?#{@pitwall_spin},#{@pitwall_spin},⠙} ,#{?#{==:$W,idle},○ ,#{?#{==:$W,gone},$3✗ ,}}}}}"
 }
 # The colour also carries to the window name that follows; the current window keeps its own style.
-tmux set -g @pitwall-glyph "$(glyph "#[fg=$ASK bold]" "#[fg=$DONE bold]" "#[fg=$GONE]")"
+# A lane asking for longer than @pitwall-urgent-after turns its window's ◆ red. (Built in single quotes: the shell
+# would brace-expand this format inside a nested substitution.)
+ASKING='#{?#{m:*1*,#{P:#{@pitwall_urgent} }},#[fg='"$GONE"' bold],#[fg='"$ASK"' bold]}'
+tmux set -g @pitwall-glyph "$(glyph "$ASKING" "#[fg=$DONE bold]" "#[fg=$GONE]")"
 tmux set -g @pitwall-glyph-plain "$(glyph '' '' '')"
 # Right side: lanes that need you, lanes waiting to be restored after a crash, then the usage limits.
-tmux set -g @pitwall-summary "#{W:#{P:#{?#{==:$S,asking},#[fg=$ASK bold]◆ ,}#{?#{==:$S,done},#[fg=$DONE bold]✓ ,}}}#[nobold]#{?#{&&:#{@pitwall_restorable},#{!=:#{@pitwall_restorable},0}},#[fg=$ASK]↺ #{@pitwall_restorable}  ,}#{?#{@pitwall_quota},#{@pitwall_quota}  ,}"
+tmux set -g @pitwall-summary "#{W:#{P:#{?#{==:$S,asking},#[fg=$ASK bold]◆ ,}#{?#{==:$S,done},#[fg=$DONE bold]✓ ,}}}#[nobold]#{?#{&&:#{@pitwall_restorable},#{!=:#{@pitwall_restorable},0}},#[fg=$ASK]↺ #{@pitwall_restorable}  ,}#{?#{&&:#{@pitwall_bell},#{!=:#{@pitwall_bell},0}},#[fg=$ASK bold]⚑ #{@pitwall_bell}#[nobold]  ,}#{?#{@pitwall_quota},#{@pitwall_quota}  ,}"
 
 # Put the glyph before the window name in whatever format the theme already has.
 inject() { # $1 option, $2 glyph option

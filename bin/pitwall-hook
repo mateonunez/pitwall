@@ -40,8 +40,8 @@ sid=$(json session_id)
 # Tab-separated, and no field may be empty: tabs are whitespace to `read`, so an empty one would shift the rest.
 # (A control character would be safer, but tmux before 3.5 prints it escaped.) "-" stands for empty.
 TAB=$(printf '\t')
-info=$(tmux display -p -t "$TMUX_PANE" "#{?#{@pitwall_state},#{@pitwall_state},-}$TAB#{?#{@pitwall_session},#{@pitwall_session},-}$TAB#{window_id}$TAB#{?window_name,#{window_name},-}$TAB#{window_panes}$TAB#{pane_index}$TAB#{session_name}$TAB#{window_index}$TAB#{pid}$TAB#{?#{@pitwall-toast},#{@pitwall-toast},-}$TAB#{?#{@pitwall_quota_at},#{@pitwall_quota_at},0}" 2>/dev/null) || exit 0
-IFS=$TAB read -r current stored win wname panes pidx sname widx server toast quota_at <<EOF
+info=$(tmux display -p -t "$TMUX_PANE" "#{?#{@pitwall_state},#{@pitwall_state},-}$TAB#{?#{@pitwall_session},#{@pitwall_session},-}$TAB#{window_id}$TAB#{?window_name,#{window_name},-}$TAB#{window_panes}$TAB#{pane_index}$TAB#{session_name}$TAB#{window_index}$TAB#{pid}$TAB#{?#{@pitwall-toast},#{@pitwall-toast},-}$TAB#{?#{@pitwall_quota_at},#{@pitwall_quota_at},0}$TAB#{?#{@pitwall_bell_at},#{@pitwall_bell_at},0}$TAB#{?#{@pitwall-urgent-after},#{@pitwall-urgent-after},600}" 2>/dev/null) || exit 0
+IFS=$TAB read -r current stored win wname panes pidx sname widx server toast quota_at bell_at urgent_after <<EOF
 $info
 EOF
 [ "$current" = - ] && current=''
@@ -99,7 +99,8 @@ esac
 set -- set -p -t "$TMUX_PANE" @pitwall_state "$state" ';' \
   set -p -t "$TMUX_PANE" @pitwall_since "$now" ';' \
   set -p -t "$TMUX_PANE" @pitwall_harness "$harness" ';' \
-  set -p -t "$TMUX_PANE" @pitwall_name "${PWD##*/}"
+  set -p -t "$TMUX_PANE" @pitwall_name "${PWD##*/}" ';' \
+  set -pu -t "$TMUX_PANE" @pitwall_urgent
 for c in $(tmux list-clients -F '#{client_name}' 2>/dev/null); do
   set -- "$@" ';' refresh-client -S -t "$c"
   # A toast only for clients that are not already looking at the lane.
@@ -116,6 +117,14 @@ if [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/pitwall/opentimeline" ]; then
 fi
 # The spinner animates only while something works; the ticker exits on its own afterwards.
 [ "$state" = working ] && tmux run-shell -b "'$bin/pitwall-tick'" >/dev/null 2>&1
-# Quotas refresh when a turn ends and they are older than ten minutes: no polling.
-case $state in done | idle) [ $((now - ${quota_at:-0})) -gt 600 ] && tmux run-shell -b "'$bin/pitwall' quota --refresh" >/dev/null 2>&1 ;; esac
+# A lane that starts asking gets one check, ten minutes on (no polling): still asking since then means urgent.
+[ "$state" = asking ] && [ "${urgent_after:-0}" -gt 0 ] &&
+  tmux run-shell -b "sleep $urgent_after; '$bin/pitwall' _escalate '$TMUX_PANE' '$now'" >/dev/null 2>&1
+# When a turn ends: usage limits older than ten minutes, and Needs you's count older than two, refresh. No polling.
+case $state in
+  done | idle)
+    [ $((now - ${quota_at:-0})) -gt 600 ] && tmux run-shell -b "'$bin/pitwall' quota --refresh" >/dev/null 2>&1
+    [ $((now - ${bell_at:-0})) -gt 120 ] && tmux run-shell -b "'$bin/pitwall' ot bell --refresh" >/dev/null 2>&1
+    ;;
+esac
 exit 0

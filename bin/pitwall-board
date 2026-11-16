@@ -20,7 +20,7 @@ TMP=$(mktemp -d "${TMPDIR:-/tmp}/pitwall-board.XXXXXX")
 
 sel=0 tick=0 sessions=0 cols=80 lines=24 now=0 dirty=1 sig='' psig=''
 metrics='' metrics_for='' stats_pid='' stats_due=0 quota='' rule='' keys=''
-L_state=() L_session=() L_window=() L_id=() L_since=() L_harness=() L_task=() L_transcript=() L_sid=()
+L_state=() L_session=() L_window=() L_id=() L_since=() L_harness=() L_task=() L_transcript=() L_sid=() L_urgent=()
 preview=() spin_at=() # spin_at: "row;col;selected" for every spinner cell of the last full draw
 
 resize() {
@@ -41,14 +41,14 @@ clock() {
 
 # Lanes, split once here (never while drawing). The screen redraws only when they changed.
 load() {
-  local rank state session window id since harness task transcript sid new='' seen=$US
-  L_state=() L_session=() L_window=() L_id=() L_since=() L_harness=() L_task=() L_transcript=() L_sid=()
+  local rank state session window id since harness task transcript sid urgent new='' seen=$US
+  L_state=() L_session=() L_window=() L_id=() L_since=() L_harness=() L_task=() L_transcript=() L_sid=() L_urgent=()
   sessions=0
-  while IFS="$US" read -r rank state session window id since harness task transcript sid; do
-    L_state+=("$state") L_session+=("$session") L_window+=("$window") L_id+=("$id") L_since+=("$since")
+  while IFS="$US" read -r rank state session window id since harness task transcript sid urgent; do
+    L_urgent+=("$urgent") L_state+=("$state") L_session+=("$session") L_window+=("$window") L_id+=("$id") L_since+=("$since")
     L_harness+=("$harness") L_task+=("$task") L_transcript+=("$transcript") L_sid+=("$sid")
     case $seen in *"$US$session$US"*) ;; *) seen+="$session$US" sessions=$((sessions + 1)) ;; esac
-    new+="$state$id$since$task|"
+    new+="$state$id$since$task$urgent|"
   done < <("$PITWALL" _lanes 2>/dev/null | tr '\t' '\037')
   ((sel >= ${#L_id[@]})) && sel=$((${#L_id[@]} - 1))
   ((sel < 0)) && sel=0
@@ -135,6 +135,7 @@ draw() {
   width=$((cols - 41 - sesw)) # bar · number · glyph · 17 name · session · task · 7 harness · 4 age · gaps
   for ((i = 0; i < n; i++)); do
     style "${L_state[i]}"
+    [ "${L_urgent[i]}" = urgent ] && colour="${BOLD}${RED}" # asking for too long
     if [ "$sect" != "$section" ]; then
       section=$sect
       out+="${EOL}"$'\n'"  ${MUTED}${sect}${R}${EOL}"$'\n'
