@@ -19,7 +19,7 @@ pitwall reads window options and pane titles and captures panes only for the boa
 
 ## Commits and releases
 
-Commits are Conventional Commits, subject only. While pitwall is 0.x, `feat` bumps the minor and `fix` the patch. Never edit `version.txt`, `CHANGELOG.md` or `.release-please-manifest.json` by hand: release-please owns them through its release PR.
+Commits are Conventional Commits, subject only. While pitwall is 0.x, `feat` and `fix` both bump the patch (as in OpenTimeline); a breaking change bumps the minor. Never edit `version.txt`, `CHANGELOG.md` or `.release-please-manifest.json` by hand: release-please owns them through its release PR.
 
 ## Commands
 
