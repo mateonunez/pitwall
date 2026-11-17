@@ -185,6 +185,19 @@ eq "renaming a workspace keeps its records in step" "$(cut -f4 "$XDG_STATE_HOME/
 pw move "oss:two" s >/dev/null
 eq "and the lane can come back" "$($T display -p -t "$P2" '#{session_name}')" s
 
+# A window moving out leaves no gap (tmux renumbers only on close), even when moved by hand; records follow.
+$T set -g renumber-windows on \; new-session -d -s r -n ra \; new-window -d -t r:1 -n rb \; new-window -d -t r:2 -n rc
+$T set -p -t r:rc @pitwall_session s-rc \; set -p -t r:ra @pitwall_session s-ra
+printf 'claude\ts-rc\t/tmp\tr\t2\trc\t0\t1\t1\n' >"$XDG_STATE_HOME/pitwall/lanes/s-rc"
+printf 'claude\ts-ra\t/tmp\tr\t0\tra\t0\t1\t1\n' >"$XDG_STATE_HOME/pitwall/lanes/s-ra"
+$T move-window -d -s r:ra -t '=s:'
+i=0; until [ "$($T list-windows -t '=r' -F '#I' | tr '\n' ' ')" = "0 1 " ] || [ $i -ge 30 ]; do sleep 0.1; i=$((i + 1)); done
+sleep 0.2
+eq "moving a window out renumbers what stays" "$($T list-windows -t '=r' -F '#I:#W' | tr '\n' ' ')" "0:rb 1:rc "
+eq "the records of the windows that shifted follow" "$(cut -f5 "$XDG_STATE_HOME/pitwall/lanes/s-rc")" 1
+eq "and the moved window's own record, moved by hand" "$(cut -f4,5 "$XDG_STATE_HOME/pitwall/lanes/s-ra")" "s	$($T list-windows -t '=s' -F '#I #W' | awk '$2 == "ra" { print $1 }')"
+$T kill-session -t r \; kill-window -t s:ra
+
 # --- the board, driven like a person would: keys in, screen out -------------------------------------------------
 # Its own server with four known lanes (alpha, beta, gamma in lab; delta in oss), the board in a pane of its own.
 B="tmux -L pitwall-board-$$"

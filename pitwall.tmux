@@ -68,6 +68,11 @@ tmux set-hook -g 'session-window-changed[73]' "$CLEAR"
 tmux set-hook -g 'client-session-changed[73]' "$CLEAR"
 tmux set-hook -g 'client-attached[73]' "$CLEAR"
 
+# With renumber-windows on, a window moving out of a session closes its gap too, not only one that closes
+# (prefix . , the board's m, pitwall move). Deferred: while the hook runs, the window is still linked.
+tmux set-hook -g 'window-unlinked[75]' "if -F '#{renumber-windows}' \"run-shell -b \\\"'$DIR/bin/pitwall' _reindex '#{hook_session_name}' '#{hook_window}'\\\"\""
+[ "$(tmux show -gv renumber-windows)" = on ] && tmux run-shell -b "'$DIR/bin/pitwall' _reindex"
+
 # Board and jump. Not choose-tree: its j/k are compiled into tmux, and navigation here is Colemak (n/e).
 # The board wants a bash that reads with sub-second timeouts; the macOS /bin/bash 3.2 only manages whole seconds.
 BASH_BIN=bash

@@ -155,6 +155,17 @@ follow() {
     done
 }
 
+# tmux renumbers a session (renumber-windows) when a window closes, not when one moves out: close that gap too,
+# and keep the records in step. No session: every one. A moved window's own record follows it as well.
+cmd__reindex() {
+  { if [ -n "${1:-}" ]; then echo "$1"; else tmux list-sessions -F '#{session_name}'; fi; } | while IFS= read -r s; do
+    tmux move-window -r -t "=$s:" 2>/dev/null || continue
+    for w in $(tmux list-windows -t "=$s" -F '#{window_id}'); do follow "$w"; done
+  done
+  [ -n "${2:-}" ] && follow "$2"
+  return 0
+}
+
 # Move a window (by id) to a workspace, creating it if needed.
 move_window() {
   win=$1 ws=$2
@@ -535,6 +546,7 @@ case ${1:-} in
   ws) shift; cmd_ws "$@" ;;
   move) shift; cmd_move "$@" ;;
   _move) shift; move_window "$@" ;;
+  _reindex) shift; cmd__reindex "$@" ;;
   ot) shift; cmd_ot "$@" ;;
   _escalate) shift; cmd__escalate "$@" ;;
   install) shift; cmd_install "${1:-}" ;;
