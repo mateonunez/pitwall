@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/mateonunez/pitwall/compare/v0.1.1...v0.1.2) (2026-11-17)
+
+
+### Bug Fixes
+
+* a window moving out of a workspace leaves no gap ([bfd85f6](https://github.com/mateonunez/pitwall/commit/bfd85f6f3a2032a95803f89cad0fa4f2419e7de9))
+
 ## [0.1.1](https://github.com/mateonunez/pitwall/compare/v0.1.0...v0.1.1) (2026-11-17)
 
 
