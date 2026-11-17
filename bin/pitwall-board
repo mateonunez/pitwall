@@ -1,38 +1,42 @@
 #!/usr/bin/env bash
-# pitwall board: every lane, grouped by what needs you, with a live preview of the selected one.
-# Keys follow Colemak + vim: n/e down/up, i or ⏎ jump in, h/q/esc close, d/D first/last, 1-9 jump straight,
-# m move the lane's window to another workspace (its agents keep running).
-# Runs inside `display-popup -E`, with the newest bash pitwall.tmux finds; it still works on the macOS bash 3.2
-# (always ${VAR} before a non-ASCII glyph).
+# pitwall board: every lane, filtered, grouped and sorted your way, with a live preview of the one under the cursor.
+# Keys follow Colemak + vim. Moving: n/e down/up, d/D first/last, 1-9 a visible row, i or ⏎ jump in.
+# Finding: / filter as you type, // search the lanes' recent output, w one workspace or all, g group by state or
+# workspace, s sort. Managing: v select, V select everything shown, m move to a workspace. ? every key, h/q close.
 #
-# Speed: the screen is drawn in full only when something on it changed (lanes, preview, metrics, selection, size).
-# Between those, a spinner frame rewrites just its own cells. Lanes and the preview reload once a second; metrics
-# run in the background, so a key never waits for them.
+# Selection follows lanes, not rows: a mark is a pane id, so lanes re-sorting under you never shift it. An action
+# says what it applies to, counts what the filter hides, and clears the selection when it is done. esc peels one
+# layer at a time: the selection, then the filter, then the board.
+#
+# Speed: the screen is drawn in full only when something on it changed; a spinner frame rewrites just its cells.
+# Runs inside `display-popup -E` on the newest bash pitwall.tmux finds; it still works on the macOS bash 3.2
+# (always ${VAR} before a non-ASCII glyph).
 
 PITWALL="$(cd "$(dirname "$0")" && pwd)/pitwall"
 STATS="$(dirname "$PITWALL")/pitwall-stats"
 E=$'\033'
 US=$'\037' # rows are read on this separator: a tab is whitespace to `read`, so empty fields would collapse
-AMBER="${E}[38;2;245;158;11m" GREEN="${E}[38;2;0;199;88m" RED="${E}[38;2;251;44;54m"
+AMBER="${E}[38;2;245;158;11m" GREEN="${E}[38;2;0;199;88m" RED="${E}[38;2;251;44;54m" BLUE="${E}[38;2;48;128;255m"
 TEXT="${E}[38;2;229;231;235m" MUTED="${E}[38;2;156;163;175m" DIM="${E}[38;2;107;114;128m"
 SELBG="${E}[48;2;38;38;38m" CHIP="${E}[48;2;55;55;55m" BOLD="${E}[1m" R="${E}[0m" EOL="${E}[K"
 SPIN=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/pitwall-board.XXXXXX")
 
-sel=0 tick=0 sessions=0 cols=80 lines=24 now=0 dirty=1 sig='' psig=''
-metrics='' metrics_for='' stats_pid='' stats_due=0 quota='' rule='' keys='' keys_len=0
+tick=0 sessions=0 cols=80 lines=24 now=0 dirty=1 sig='' psig='' rule=''
+metrics='' metrics_for='' stats_pid='' stats_due=0 quota=''
 L_state=() L_session=() L_window=() L_id=() L_since=() L_harness=() L_task=() L_transcript=() L_sid=() L_urgent=()
-preview=() spin_at=() # spin_at: "row;col;selected" for every spinner cell of the last full draw
+WS=()                # workspaces, in order
+VI=()                # the rows shown: indices into L_*, in display order
+cur=0 cur_id=''      # the cursor, as a row and as the pane it is on
+query='' typing=0 found='' searched=0 # the filter; with a leading /, found holds the panes whose output matched
+scope='' group=state sortby=urgency help=0 wcur=0
+pending=''           # keys read while telling esc from an arrow, played back in order
+marks='|' notice=''  # marks: |pane|pane|, a set of pane ids
+preview=() spin_at=()
 
 resize() {
   cols=$(tput cols) lines=$(tput lines)
   rule=$(printf '%*s' "$cols" '' | tr ' ' '─')
-  local k
-  keys='' keys_len=2
-  for k in 'n e:move' 'i ⏎:jump' '1-9:pick' 'm:to workspace' 'h q:close'; do
-    keys+="${CHIP}${TEXT} ${k%%:*} ${R} ${MUTED}${k#*:}${R}   "
-    keys_len=$((keys_len + ${#k} + 5)) # what the chips take on screen, so the limits never draw over them
-  done
   printf '%s[2J' "$E"
   dirty=1
 }
@@ -41,33 +45,77 @@ clock() {
   if ((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 2))); then printf -v now '%(%s)T' -1; else now=$(date +%s); fi
 }
 
-# Lanes, split once here (never while drawing). The screen redraws only when they changed.
+marked() { case $marks in *"|$1|"*) return 0 ;; esac; return 1; }
+mark_count() { local m=${marks//[^|]/}; echo $((${#m} - 1)); }
+
+# Lanes, split once here (never while drawing). Marks on lanes that are gone are dropped, and the board says so.
 load() {
-  local rank state session window id since harness task transcript sid urgent new='' seen=$US
-  L_state=() L_session=() L_window=() L_id=() L_since=() L_harness=() L_task=() L_transcript=() L_sid=() L_urgent=()
-  sessions=0
+  local rank state session window id since harness task transcript sid urgent new='' seen=$US kept='|' gone=0 m rest
+  L_state=() L_session=() L_window=() L_id=() L_since=() L_harness=() L_task=() L_transcript=() L_sid=() L_urgent=() WS=()
   while IFS="$US" read -r rank state session window id since harness task transcript sid urgent; do
     L_urgent+=("$urgent") L_state+=("$state") L_session+=("$session") L_window+=("$window") L_id+=("$id") L_since+=("$since")
     L_harness+=("$harness") L_task+=("$task") L_transcript+=("$transcript") L_sid+=("$sid")
-    case $seen in *"$US$session$US"*) ;; *) seen+="$session$US" sessions=$((sessions + 1)) ;; esac
+    case $seen in *"$US$session$US"*) ;; *) seen+="$session$US" WS+=("$session") ;; esac
     new+="$state$id$since$task$urgent|"
   done < <("$PITWALL" _lanes 2>/dev/null | tr '\t' '\037')
-  ((sel >= ${#L_id[@]})) && sel=$((${#L_id[@]} - 1))
-  ((sel < 0)) && sel=0
+  sessions=${#WS[@]}
+  rest=${marks#|}
+  while [ -n "$rest" ]; do
+    m=${rest%%|*} rest=${rest#*|}
+    case "$US${L_id[*]-}$US" in *[[:space:]$US]"$m"[[:space:]$US]*) kept+="$m|" ;; *) gone=$((gone + 1)) ;; esac
+  done
+  if ((gone)); then marks=$kept notice="$gone selected lane$( ((gone > 1)) && echo s) closed, dropped from the selection"; fi
+  [ -n "$scope" ] && case "$US${WS[*]-}$US" in *[[:space:]$US]"$scope"[[:space:]$US]*) ;; *) scope='' ;; esac
   quota=$(tmux show -gqv @pitwall_quota_plain 2>/dev/null)
   clock
   new+="$quota$((now / 60))" # ages move by the minute
   [ "$new" != "$sig" ] && sig=$new dirty=1
+  view
 }
 
-# The selected lane's last lines: one tmux call, kept only when they changed.
+# The rows to show: scope and filter first, then the order (group, then sort). The cursor stays on its pane.
+view() {
+  local i key rank hay hit keys=''
+  for ((i = 0; i < ${#L_id[@]}; i++)); do
+    [ -n "$scope" ] && [ "${L_session[i]}" != "$scope" ] && continue
+    if [ -n "$query" ]; then
+      if [ "${query:0:1}" = / ]; then
+        ((searched)) && case $found in *"|${L_id[i]}|"*) ;; *) continue ;; esac
+      else
+        hay="${L_window[i]} ${L_session[i]} ${L_task[i]} ${L_harness[i]} ${L_state[i]}"
+        # The filter ignores case. Only here: nocasematch also bends `case`, where it would read V as v.
+        shopt -s nocasematch
+        [[ $hay == *"$query"* ]] && hit=1 || hit=0
+        shopt -u nocasematch
+        ((hit)) || continue
+      fi
+    fi
+    case ${L_state[i]} in asking) rank=1 ;; done) rank=2 ;; working) rank=3 ;; idle) rank=4 ;; *) rank=5 ;; esac
+    [ "${L_urgent[i]}" = urgent ] && rank=0
+    case $sortby in
+      urgency) key="$rank ${L_session[i]} ${L_window[i]}" ;;
+      age) key=$(printf '%012d' $((${L_since[i]:-0} > 0 ? 9999999999 - ${L_since[i]:-0} : 999999999999))) ;; # newest first
+      name) key="${L_window[i]} ${L_session[i]}" ;;
+    esac
+    [ "$group" = workspace ] && key="${L_session[i]}$US$key"
+    keys+="$key"$'\t'"$i"$'\n'
+  done
+  VI=()
+  [ -n "$keys" ] && while IFS=$'\t' read -r _ i; do VI+=("$i"); done < <(printf '%s' "$keys" | LC_ALL=C sort -f -t$'\t' -k1,1)
+  cur=0
+  for ((i = 0; i < ${#VI[@]}; i++)); do [ "${L_id[VI[i]]}" = "$cur_id" ] && cur=$i && break; done
+  cur_id=${L_id[VI[cur]]-}
+  dirty=1
+}
+
+# The lane under the cursor's last lines: one tmux call, kept only when they changed.
 peek() {
   preview=()
-  ((${#L_id[@]})) || return
-  local line room=$((lines * 45 / 100)) n joined
+  [ -n "$cur_id" ] || { psig='' dirty=1; return; }
+  local line room=$((lines * 40 / 100)) n joined
   while IFS= read -r line; do
-    [ -n "${line//[[:space:]]/}" ] && preview+=("$line") # blank lines waste the little room there is
-  done < <(tmux capture-pane -e -J -p -t "${L_id[sel]}" -S "-$((room * 3))" 2>/dev/null)
+    [ -n "${line//[[:space:]]/}" ] && preview+=("$line")
+  done < <(tmux capture-pane -e -J -p -t "$cur_id" -S "-$((room * 3))" 2>/dev/null)
   n=${#preview[@]}
   ((n > room)) && preview=("${preview[@]:n-room}")
   joined="${preview[*]-}"
@@ -76,10 +124,11 @@ peek() {
 
 # Metrics read the transcript, which can take a fraction of a second: run them in the background, pick them up later.
 stats_start() {
-  ((${#L_id[@]})) || return
+  [ -n "$cur_id" ] || return
   [ -n "$stats_pid" ] && kill -0 "$stats_pid" 2>/dev/null && return
-  metrics_for=${L_id[sel]}
-  "$STATS" "${L_harness[sel]}" "${L_transcript[sel]}" "${L_sid[sel]}" >"$TMP/stats" 2>/dev/null &
+  local i=${VI[cur]}
+  metrics_for=$cur_id
+  "$STATS" "${L_harness[i]}" "${L_transcript[i]}" "${L_sid[i]}" >"$TMP/stats" 2>/dev/null &
   stats_pid=$!
 }
 
@@ -87,7 +136,7 @@ stats_poll() {
   [ -n "$stats_pid" ] || return
   kill -0 "$stats_pid" 2>/dev/null && return
   stats_pid=''
-  [ "$metrics_for" = "${L_id[sel]-}" ] || { stats_due=$tick; return; } # the selection moved meanwhile: read again
+  [ "$metrics_for" = "$cur_id" ] || { stats_due=$tick; return; } # the cursor moved meanwhile: read again
   local model pct _ctx _raw total out m=''
   IFS=$'\t' read -r model pct _ctx _raw total out <"$TMP/stats"
   [ -n "$model" ] && m+="$model"
@@ -95,6 +144,18 @@ stats_poll() {
   [ -n "$total" ] && m+="${m:+ · }${total} tok"
   [ -n "$out" ] && m+=" (${out} out)"
   [ "$m" != "$metrics" ] && metrics=$m dirty=1
+}
+
+# // search: the recent output of every lane in scope, once, when you press ⏎.
+search_output() {
+  local i text=${query:1}
+  found='|' searched=1
+  [ -n "$text" ] || return
+  printf '%s[%d;1H%s  %ssearching the lanes'"'"' output for “%s”…%s' "$E" "$lines" "$EOL" "$MUTED" "$text" "$R"
+  for ((i = 0; i < ${#L_id[@]}; i++)); do
+    [ -n "$scope" ] && [ "${L_session[i]}" != "$scope" ] && continue
+    tmux capture-pane -p -J -t "${L_id[i]}" -S -500 2>/dev/null | grep -qiF -- "$text" && found+="${L_id[i]}|"
+  done
 }
 
 age() { # age <epoch> → $a, by the minute
@@ -114,52 +175,110 @@ style() { # style <state> → $glyph $colour $sect
   esac
 }
 
-draw() {
-  local n=${#L_id[@]} i c_ask=0 c_done=0 c_work=0 c_idle=0 section='' out row y=2 width sesw=0
-  local glyph colour sect bg mark num a head room start
-  clock
-  spin_at=()
-  for ((i = 0; i < n; i++)); do
+chips() { # chips "key:label" … → $foot and its on-screen length $foot_len
+  local k
+  foot='' foot_len=2
+  for k in "$@"; do
+    foot+="${CHIP}${TEXT} ${k%%:*} ${R} ${MUTED}${k#*:}${R}   "
+    foot_len=$((foot_len + ${#k} + 5))
+  done
+}
+
+draw_help() {
+  local out="${E}[H${E}[J"$'\n'"  ${BOLD}${TEXT}pit${AMBER}wall${R}  ${MUTED}keys${R}"$'\n'$'\n' line
+  for line in \
+    'n e:down, up' 'd D:first, last' '1-9:a row shown' 'i ⏎:jump into the lane' \
+    '/:filter lanes as you type (name, workspace, task, agent, state)' '//:search the lanes'"'"' recent output (⏎ to run)' \
+    'w:one workspace, the next one, or all' 'g:view by state, by workspace, or one row per workspace' 's:sort by urgency, newest or name' \
+    'v:select the lane, or unselect it' 'V:select everything shown, or unselect it' 'm:move the selection (or the lane) to a workspace' \
+    'esc:clear the selection, then the filter, then close' '?:this list' 'h q:close'; do
+    out+="$(printf '  %s%-6s%s %s' "$AMBER" "${line%%:*}" "$R" "${line#*:}")"$'\n'
+  done
+  out+=$'\n'"  ${DIM}Selection follows lanes, not rows, and an action always says what it applies to.${R}"
+  printf '%s' "$out"
+}
+
+# The top: the name and the counts of every lane, then the workspace tabs and the view. Appends to $out, moves $y.
+header() {
+  local i w wa row tabs c_ask=0 c_done=0 c_work=0 c_idle=0 all=${#L_id[@]}
+  for ((i = 0; i < all; i++)); do
     case ${L_state[i]} in asking) c_ask=$((c_ask + 1)) ;; done) c_done=$((c_done + 1)) ;; working) c_work=$((c_work + 1)) ;; *) c_idle=$((c_idle + 1)) ;; esac
   done
-  ((sessions > 1)) && sesw=13 # the session column appears only when lanes span sessions
-
   out="${E}[H${EOL}"$'\n'
   printf -v row '  %spit%swall%s%*s%s◆ %d%s  %s✓ %d%s  %s%s %d%s  %s○ %d%s' "${BOLD}${TEXT}" "$AMBER" "$R" $((cols - 33)) '' \
     "$AMBER" "$c_ask" "$R" "$GREEN" "$c_done" "$R" "$TEXT" "${SPIN[tick % 10]}" "$c_work" "$R" "$MUTED" "$c_idle" "$R"
   out+="$row${EOL}"$'\n'
   spin_at+=("$y;$((cols - 15 + ${#c_ask} + ${#c_done}));") # the header's spinner, after "◆ N  ✓ N  "
+
+  # Workspace tabs (w), with the view's grouping and order on the right.
+  tabs="  $( [ -z "$scope" ] && printf '%s' "${BOLD}${AMBER}all${R}" || printf '%s' "${MUTED}all${R}")"
+  for w in ${WS[@]+"${WS[@]}"}; do
+    wa=0
+    for ((i = 0; i < all; i++)); do [ "${L_session[i]}" = "$w" ] && [ "${L_state[i]}" = asking ] && wa=$((wa + 1)); done
+    if [ "$w" = "$scope" ]; then tabs+="  ${DIM}·${R}  ${BOLD}${AMBER}${w}${R}"; else tabs+="  ${DIM}·${R}  ${MUTED}${w}${R}"; fi
+    ((wa)) && tabs+=" ${AMBER}◆${wa}${R}"
+  done
+  y=$((y + 1))
+  out+="$tabs${EOL}${E}[${y};$((cols - 34))H${DIM}$(printf '%32s' "view $group · sort $sortby")${R}"$'\n'
+
+}
+
+draw() {
+  ((help)) && { draw_help; dirty=0; return; }
+  local n=${#VI[@]} all=${#L_id[@]} r i c_ask=0 c_done=0 c_work=0 c_idle=0 section='' out row y=2 width sesw=0
+  local glyph colour sect bg mark num a head room start tabs w wa nm hidden picked
+  clock
+  spin_at=()
+  [ "$group" = workspaces ] && { draw_overview; return; }
+  [ "$group" = state ] && ((sessions > 1)) && [ -z "$scope" ] && sesw=13 # the workspace column, when it tells you something
+
+  header
+  # The filter line, while typing or while a filter holds.
+  if ((typing)) || [ -n "$query" ]; then
+    if [ "${query:0:1}" = / ]; then
+      nm=$( ((searched)) && echo "${n} of ${all} lanes mention it" || echo "⏎ to search the output")
+      out+="  ${AMBER}//${R} ${TEXT}${query:1}${R}$( ((typing)) && printf '%s▏%s' "$AMBER" "$R")  ${DIM}${nm}${R}${EOL}"$'\n'
+    else
+      out+="  ${AMBER}/${R} ${TEXT}${query}${R}$( ((typing)) && printf '%s▏%s' "$AMBER" "$R")  ${DIM}${n} of ${all}${R}${EOL}"$'\n'
+    fi
+    y=$((y + 1))
+  fi
+
   if ((n == 0)); then
-    out+="${EOL}"$'\n'"  ${MUTED}No lanes yet. A window shows up here once its agent works or a hook reports it.${R}${EOL}"$'\n'
+    out+="${EOL}"$'\n'"  ${MUTED}$( ((all)) && echo 'No lane matches. esc clears the filter.' || echo 'No lanes yet. A window shows up here once its agent works or a hook reports it.')${R}${EOL}"$'\n'
     y=$((y + 2))
   fi
 
-  width=$((cols - 41 - sesw)) # bar · number · glyph · 17 name · session · task · 7 harness · 4 age · gaps
-  for ((i = 0; i < n; i++)); do
+  width=$((cols - 43 - sesw)) # mark · bar · number · glyph · 17 name · workspace · task · 7 agent · 4 age · gaps
+  for ((r = 0; r < n; r++)); do
+    i=${VI[r]}
     style "${L_state[i]}"
     [ "${L_urgent[i]}" = urgent ] && colour="${BOLD}${RED}" # asking for too long
+    [ "$group" = workspace ] && sect=${L_session[i]}
     if [ "$sect" != "$section" ]; then
       section=$sect
       out+="${EOL}"$'\n'"  ${MUTED}${sect}${R}${EOL}"$'\n'
       y=$((y + 2))
     fi
     y=$((y + 1))
-    bg='' mark=' ' num=' '
-    ((i == sel)) && bg=$SELBG mark="${AMBER}▌"
-    ((i < 9)) && num=$((i + 1))
-    [ "${L_state[i]}" = working ] && spin_at+=("$y;5;${bg:+1}")
+    bg='' mark=' ' num=' ' picked=' '
+    ((r == cur)) && bg=$SELBG mark="${AMBER}▌"
+    marked "${L_id[i]}" && picked="${BLUE}●"
+    ((r < 9)) && num=$((r + 1))
+    [ "${L_state[i]}" = working ] && spin_at+=("$y;6;${bg:+1}") # mark, selection dot, space, number, space, glyph
     age "${L_since[i]}"
-    printf -v row '%s%s %s%s%s %s%s %-17.17s%s' "$bg" "$mark" "$DIM" "$num" "${R}${bg}" "$colour" "$glyph" "${L_window[i]}" "${R}${bg}"
+    printf -v row '%s%s%s%s %s%s%s %s%s %-17.17s%s' "$bg" "$mark" "${R}${bg}" "$picked" "$DIM" "$num" "${R}${bg}" "$colour" "$glyph" "${L_window[i]}" "${R}${bg}"
     out+=$row
     if ((sesw)); then printf -v row ' %s%-12.12s%s' "$DIM" "${L_session[i]}" "${R}${bg}"; out+=$row; fi
     printf -v row ' %s%-*.*s%s %s%7s %4s%s%s' "$TEXT" "$width" "$width" "${L_task[i]}" "${R}${bg}" "$DIM" "${L_harness[i]}" "$a" "$EOL" "$R"
     out+="$row"$'\n'
   done
 
-  if ((n)); then
-    age "${L_since[sel]}"
-    head="${L_window[sel]} · ${L_state[sel]}${a:+ ${a}}${metrics:+ · ${metrics}}"
-    out+="${EOL}"$'\n'"  ${DIM}╭─ ${TEXT}${L_window[sel]}${MUTED} · ${L_state[sel]}${a:+ ${a}}${metrics:+ · ${metrics}} ${DIM}${rule:0:$((cols - ${#head} - 8))}${R}${EOL}"$'\n'
+  if [ -n "$cur_id" ]; then
+    i=${VI[cur]}
+    age "${L_since[i]}"
+    head="${L_window[i]} · ${L_state[i]}${a:+ ${a}}${metrics:+ · ${metrics}}"
+    out+="${EOL}"$'\n'"  ${DIM}╭─ ${TEXT}${L_window[i]}${MUTED} · ${L_state[i]}${a:+ ${a}}${metrics:+ · ${metrics}} ${DIM}${rule:0:$((cols - ${#head} - 8))}${R}${EOL}"$'\n'
     y=$((y + 2))
     room=$((lines - y - 3))
     ((room > ${#preview[@]})) && room=${#preview[@]}
@@ -167,15 +286,93 @@ draw() {
     for ((i = start; i < ${#preview[@]}; i++)); do out+="  ${DIM}│${R} ${preview[i]}${R}${EOL}"$'\n'; done
   fi
   out+="${E}[J"
-  printf -v row '%s[%d;1H  %s' "$E" "$lines" "$keys"
+
+  # The footer says what keys do now, and what an action would apply to.
+  picked=$(mark_count)
+  if ((typing)); then
+    chips 'ctrl-n ctrl-e:move' "⏎:$( [ "${query:0:1}" = / ] && echo 'search output' || echo keep)" 'esc:clear'
+  elif ((picked)); then
+    hidden=0
+    local rest=${marks#|} m
+    while [ -n "$rest" ]; do
+      m=${rest%%|*} rest=${rest#*|}
+      case " ${VI[*]+$(for i in "${VI[@]}"; do printf '%s ' "${L_id[i]}"; done)} " in *" $m "*) ;; *) hidden=$((hidden + 1)) ;; esac
+    done
+    chips "m:move ${picked} lane$( ((picked > 1)) && echo s)" 'v:toggle' 'V:all shown' 'esc:clear selection'
+    foot="  ${BLUE}${BOLD}● ${picked} selected${R}$( ((hidden)) && printf '%s · %s hidden by the filter%s' "$AMBER" "$hidden" "$R")   ${foot# }"
+    foot_len=$((foot_len + 14 + ${#picked} + (hidden ? 22 + ${#hidden} : 0)))
+  else
+    if [ -n "$scope" ]; then chips 'n e:move' 'i ⏎:jump' '/:search' "w:next workspace" "V:all in $scope" 'm:move' '?:keys'
+    else chips 'n e:move' 'i ⏎:jump' '/:search' 'w:workspace' 'v:select' 'm:move' '?:keys'; fi
+  fi
+  [ -n "$notice" ] && { foot="  ${AMBER}${notice}${R}   ${foot# }"; foot_len=$((foot_len + ${#notice} + 3)); }
+  printf -v row '%s[%d;1H%s%s' "$E" "$lines" "${foot:0:1}" "${foot:1}"
   out+=$row
-  if [ -n "$quota" ] && ((cols - keys_len - ${#quota} > 2)); then printf -v row '%s[%d;%dH%s%s%s' "$E" "$lines" $((cols - ${#quota} - 1)) "$DIM" "$quota" "$R"; out+=$row; fi
+  if [ -n "$quota" ] && ((cols - foot_len - ${#quota} > 2)); then printf -v row '%s[%d;%dH%s%s%s' "$E" "$lines" $((cols - ${#quota} - 1)) "$DIM" "$quota" "$R"; out+=$row; fi
+  printf '%s' "$out"
+  dirty=0
+}
+
+# The workspaces view (g, a third time): one row per workspace, for when there are too many lanes to list. ⏎ opens
+# one: the board shows only its lanes.
+draw_overview() {
+  local out='' row y=2 r i w n a ask done work idle last top bg mark room shown
+  header
+  out+="${EOL}"$'\n'"  ${MUTED}WORKSPACES${R}${EOL}"$'\n'
+  y=$((y + 2))
+  ((wcur >= ${#WS[@]})) && wcur=$((${#WS[@]} - 1))
+  ((wcur < 0)) && wcur=0
+  for ((r = 0; r < ${#WS[@]}; r++)); do
+    w=${WS[r]} n=0 ask=0 done=0 work=0 idle=0 last=0 top=''
+    for ((i = 0; i < ${#L_id[@]}; i++)); do
+      [ "${L_session[i]}" = "$w" ] || continue
+      n=$((n + 1))
+      case ${L_state[i]} in asking) ask=$((ask + 1)); [ -z "$top" ] && top=${L_window[i]} ;; done) done=$((done + 1)) ;; working) work=$((work + 1)) ;; *) idle=$((idle + 1)) ;; esac
+      case ${L_since[i]} in '' | *[!0-9]*) ;; *) ((L_since[i] > last)) && last=${L_since[i]} ;; esac
+    done
+    bg='' mark=' '
+    ((r == wcur)) && bg=$SELBG mark="${AMBER}▌"
+    age "$( ((last)) && echo "$last")"
+    printf -v row '%s%s %s%-20.20s%s %s%3d lane%s%s  ' "$bg" "$mark" "${BOLD}${TEXT}" "$w" "${R}${bg}" "$DIM" "$n" "$( ((n == 1)) && echo ' ' || echo s)" "${R}${bg}"
+    ((ask)) && row+="${BOLD}${AMBER}◆ ${ask}${R}${bg}  "
+    ((done)) && row+="${BOLD}${GREEN}✓ ${done}${R}${bg}  "
+    ((work)) && row+="${TEXT}⠙ ${work}${R}${bg}  "
+    ((idle)) && row+="${MUTED}○ ${idle}${R}${bg}  "
+    [ -n "$a" ] && row+="${DIM}moved ${a}${R}${bg}  "
+    [ -n "$top" ] && row+="${AMBER}${top} is asking${R}${bg}"
+    out+="$row${EOL}${R}"$'\n'
+    y=$((y + 1))
+  done
+  # Below, the lanes of the workspace under the cursor, most urgent first.
+  if ((${#WS[@]})); then
+    w=${WS[wcur]}
+    out+="${EOL}"$'\n'"  ${DIM}╭─ ${TEXT}${w}${MUTED} · its lanes ${DIM}${rule:0:$((cols - ${#w} - 20))}${R}${EOL}"$'\n'
+    y=$((y + 2))
+    room=$((lines - y - 3)) shown=0
+    for i in $(for i in "${!L_id[@]}"; do printf '%s ' "$i"; done); do
+      [ "${L_session[i]}" = "$w" ] || continue
+      ((shown >= room)) && break
+      style "${L_state[i]}"
+      [ "${L_urgent[i]}" = urgent ] && colour="${BOLD}${RED}"
+      age "${L_since[i]}"
+      printf -v row '  %s│%s %s%s %-17.17s%s %s%-*.*s%s %s%7s %4s%s' "$DIM" "$R" "$colour" "$glyph" "${L_window[i]}" "$R" "$TEXT" $((cols - 40)) $((cols - 40)) "${L_task[i]}" "$R" "$DIM" "${L_harness[i]}" "$a" "$R"
+      out+="$row${EOL}"$'\n'
+      shown=$((shown + 1))
+    done
+  fi
+  out+="${E}[J"
+  if (($(mark_count))); then chips "m:move $(mark_count) lane$( (($(mark_count) > 1)) && echo s)" 'v:toggle workspace' 'i ⏎:open' 'esc:clear selection'
+  else chips 'n e:move' 'i ⏎:open' 'v:select its lanes' 'g:view' '?:keys' 'h q:close'; fi
+  printf -v row '%s[%d;1H%s' "$E" "$lines" "$foot"
+  out+=$row
+  if [ -n "$quota" ] && ((cols - foot_len - ${#quota} > 2)); then printf -v row '%s[%d;%dH%s%s%s' "$E" "$lines" $((cols - ${#quota} - 1)) "$DIM" "$quota" "$R"; out+=$row; fi
   printf '%s' "$out"
   dirty=0
 }
 
 # A spinner frame: rewrite only the spinner cells, a few bytes instead of a screen.
 spin() {
+  ((help)) && return
   local p out='' r c s g=${SPIN[tick % 10]}
   for p in ${spin_at[@]+"${spin_at[@]}"}; do
     r=${p%%;*} c=${p#*;} s=${c#*;} c=${c%%;*}
@@ -190,10 +387,56 @@ jump() {
   exit 0
 }
 
-moved() { # a new selection: its preview at once, its metrics shortly (a quick run of keys reads them once)
-  metrics='' dirty=1
+moved() { # the cursor is on another lane: its preview at once, its metrics shortly
+  cur_id=${L_id[VI[cur]]-}
+  metrics='' dirty=1 notice=''
   peek
   stats_due=$((tick + 2))
+}
+
+# m: the selection if there is one (hidden lanes included, and counted), else the lane under the cursor.
+move_lanes() {
+  local ids='' wins='' w label count hidden=0 i m rest
+  if (($(mark_count))); then
+    rest=${marks#|}
+    while [ -n "$rest" ]; do m=${rest%%|*} rest=${rest#*|} ids+="$m "; done
+    count=$(mark_count)
+    for m in $ids; do
+      case " $(for i in ${VI[@]+"${VI[@]}"}; do printf '%s ' "${L_id[i]}"; done) " in *" $m "*) ;; *) hidden=$((hidden + 1)) ;; esac
+    done
+    label="$count lane$( ((count > 1)) && echo s)$( ((hidden)) && echo " ($hidden hidden by the filter)")"
+  else
+    [ -n "$cur_id" ] || return
+    ids=$cur_id label=${L_window[VI[cur]]}
+  fi
+  for m in $ids; do # one window can hold several selected panes: move it once
+    w=$(tmux display -p -t "$m" '#{window_id}' 2>/dev/null) || continue
+    case " $wins " in *" $w "*) ;; *) wins+="$w " ;; esac
+  done
+  [ -n "$wins" ] || return
+  "$(dirname "$PITWALL")/pitwall-ws" move "${wins% }" "$label" && marks='|'
+  printf '%s[?25l%s[?7l' "$E" "$E"
+  resize
+  load
+  peek
+}
+
+clear_layer() { # esc: the selection, then the filter and the scope, then the board
+  if (($(mark_count))); then marks='|' notice='' dirty=1
+  elif [ -n "$query" ] || [ -n "$scope" ]; then
+    query='' found='' searched=0 scope='' # own statement: written before a call, assignments would last only that call
+    view
+    peek
+  else exit 0; fi
+}
+
+next_scope() { # w: all → each workspace → all
+  local i next=''
+  if [ -z "$scope" ]; then next=${WS[0]-}
+  else for ((i = 0; i < ${#WS[@]}; i++)); do [ "${WS[i]}" = "$scope" ] && next=${WS[i + 1]-} && break; done; fi
+  scope=$next
+  view
+  peek
 }
 
 trap 'printf "%s[?25h%s[?7h" "$E" "$E"; rm -rf "$TMP"' EXIT
@@ -211,7 +454,8 @@ stats_start
 while :; do
   if ((dirty)); then draw; else spin; fi
   k=''
-  if ! IFS= read -rsn1 -t "$FRAME" k; then
+  if [ -n "$pending" ]; then k=${pending:0:1} pending=${pending:1} # keys typed right after esc, never lost
+  elif ! IFS= read -rsn1 -t "$FRAME" k; then
     tick=$((tick + 1))
     stats_poll
     ((stats_due && tick >= stats_due)) && stats_due=0 && stats_start
@@ -222,25 +466,77 @@ while :; do
     fi
     continue
   fi
-  if [ "$k" = "$E" ]; then
-    rest=''
-    IFS= read -rsn2 -t "$ESCWAIT" rest
-    case $rest in '[A') k=e ;; '[B') k=n ;; '[C') k=i ;; '[D') k=h ;; *) exit 0 ;; esac
+  if [ "$k" = "$E" ]; then # an arrow, or esc on its own: whatever followed that is not an arrow is a key of its own
+    rest='' r2=''
+    IFS= read -rsn1 -t "$ESCWAIT" rest
+    [ "$rest" = '[' ] && IFS= read -rsn1 -t "$ESCWAIT" r2 && rest+=$r2
+    case $rest in '[A') k=$'\x05' ;; '[B') k=$'\x0e' ;; '[C') k=RIGHT ;; '[D') k=LEFT ;; '') k=ESC ;; *) k=ESC pending="$rest$pending" ;; esac
   fi
+  if ((help)); then help=0 dirty=1; continue; fi
+
+  if [ "$group" = workspaces ]; then # the workspaces view has its own few keys
+    case $k in
+      n | j | $'\x0e') ((wcur < ${#WS[@]} - 1)) && wcur=$((wcur + 1)) dirty=1 ;;
+      e | k | $'\x05') ((wcur > 0)) && wcur=$((wcur - 1)) dirty=1 ;;
+      d) wcur=0 dirty=1 ;;
+      D) wcur=$((${#WS[@]} - 1)) dirty=1 ;;
+      i | '' | RIGHT) ((${#WS[@]})) && scope=${WS[wcur]} group=state query='' found='' searched=0 && { view; peek; } ;; # a workspace is the new focus
+      v) # every lane of the workspace under the cursor: select them all, or unselect them when they all are
+        all_in=1
+        for ((i = 0; i < ${#L_id[@]}; i++)); do [ "${L_session[i]}" = "${WS[wcur]}" ] && ! marked "${L_id[i]}" && all_in=0; done
+        for ((i = 0; i < ${#L_id[@]}; i++)); do
+          [ "${L_session[i]}" = "${WS[wcur]}" ] || continue
+          if ((all_in)); then marks=${marks/"|${L_id[i]}|"/|}; else marked "${L_id[i]}" || marks+="${L_id[i]}|"; fi
+        done
+        dirty=1
+        ;;
+      m) move_lanes ;;
+      g) group=state; view ;;
+      w) group=state; next_scope ;;
+      /) group=state typing=1 query='' found='' searched=0; view ;;
+      '?') help=1 dirty=1 ;;
+      ESC | LEFT) if (($(mark_count))); then marks='|' dirty=1; else group=state; view; fi ;;
+      h | q) exit 0 ;;
+    esac
+    continue
+  fi
+
+  if ((typing)); then # the filter line has the keys: letters type, ctrl-n/ctrl-e (or arrows) move
+    case $k in
+      ESC) typing=0 query='' found='' searched=0; view; peek ;;
+      '') typing=0; [ "${query:0:1}" = / ] && search_output; view; peek ;;
+      $'\x7f' | $'\b') query=${query%?} searched=0; view; peek ;;
+      $'\x0e') ((cur < ${#VI[@]} - 1)) && cur=$((cur + 1)) && moved ;;
+      $'\x05') ((cur > 0)) && cur=$((cur - 1)) && moved ;;
+      RIGHT | LEFT) ;;
+      *) [[ $k == [[:print:]] ]] && query+=$k searched=0 && { view; peek; } ;;
+    esac
+    continue
+  fi
+
   case $k in
-    n | j) ((sel < ${#L_id[@]} - 1)) && sel=$((sel + 1)) && moved ;;
-    e | k) ((sel > 0)) && sel=$((sel - 1)) && moved ;;
-    d) ((sel != 0)) && sel=0 && moved ;;
-    D) ((sel != ${#L_id[@]} - 1)) && sel=$((${#L_id[@]} - 1)) && moved ;;
-    i | '') ((${#L_id[@]})) && jump "$sel" ;;
-    m)
-      if ((${#L_id[@]})); then
-        "$(dirname "$PITWALL")/pitwall-ws" move "$(tmux display -p -t "${L_id[sel]}" '#{window_id}')" "${L_window[sel]}"
-        printf '%s[?25l%s[?7l' "$E" "$E"
-        resize; load; peek
-      fi
+    n | j | $'\x0e') ((cur < ${#VI[@]} - 1)) && cur=$((cur + 1)) && moved ;;
+    e | k | $'\x05') ((cur > 0)) && cur=$((cur - 1)) && moved ;;
+    d) ((cur != 0)) && cur=0 && moved ;;
+    D) ((cur != ${#VI[@]} - 1)) && cur=$((${#VI[@]} - 1)) && moved ;;
+    i | '' | RIGHT) [ -n "$cur_id" ] && jump "${VI[cur]}" ;;
+    [1-9]) ((k <= ${#VI[@]})) && jump "${VI[k - 1]}" ;;
+    /) typing=1 query='' found='' searched=0 dirty=1 ;;
+    w) next_scope ;;
+    g) case $group in state) group=workspace ;; workspace) group=workspaces ;; *) group=state ;; esac; view ;;
+    s) case $sortby in urgency) sortby=age ;; age) sortby=name ;; *) sortby=urgency ;; esac; view ;;
+    v) [ -n "$cur_id" ] && { if marked "$cur_id"; then marks=${marks/"|$cur_id|"/|}; else marks+="$cur_id|"; fi; notice='' dirty=1; } ;;
+    V) # everything shown: select it all, or, when it all is selected already, unselect it
+      all_in=1
+      for i in ${VI[@]+"${VI[@]}"}; do marked "${L_id[i]}" || all_in=0; done
+      for i in ${VI[@]+"${VI[@]}"}; do
+        if ((all_in)); then marks=${marks/"|${L_id[i]}|"/|}; else marked "${L_id[i]}" || marks+="${L_id[i]}|"; fi
+      done
+      notice='' dirty=1
       ;;
-    [1-9]) ((k <= ${#L_id[@]})) && jump $((k - 1)) ;;
+    m) move_lanes ;;
+    '?') help=1 dirty=1 ;;
+    ESC | LEFT) clear_layer ;;
     h | q) exit 0 ;;
   esac
 done

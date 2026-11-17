@@ -28,6 +28,7 @@ hook() { echo "${3:-{\}}" | TMUX="$SOCK,0,0" TMUX_PANE="$1" "$ROOT/bin/pitwall-h
 state() { $T display -p -t "$1" '#{E:@pitwall-state-fmt}'; }
 
 eq "loaded once into window-status-format" "$($T show -gv window-status-format | grep -o '@pitwall-glyph' | wc -l | tr -d ' ')" 1
+eq "tmux's help (prefix ?) lists pitwall's keys" "$($T list-keys -N | grep -c 'pitwall:')" 4
 eq "loaded once into status-right" "$($T show -gv status-right | grep -o '@pitwall-summary' | wc -l | tr -d ' ')" 1
 
 hook "$P2" SessionStart;      eq "SessionStart → idle" "$(state s:two)" idle
@@ -183,5 +184,69 @@ pw ws rename lab oss >/dev/null
 eq "renaming a workspace keeps its records in step" "$(cut -f4 "$XDG_STATE_HOME/pitwall/lanes/s-move")" oss
 pw move "oss:two" s >/dev/null
 eq "and the lane can come back" "$($T display -p -t "$P2" '#{session_name}')" s
+
+# --- the board, driven like a person would: keys in, screen out -------------------------------------------------
+# Its own server with four known lanes (alpha, beta, gamma in lab; delta in oss), the board in a pane of its own.
+B="tmux -L pitwall-board-$$"
+trap '$T kill-server 2>/dev/null; $B kill-server 2>/dev/null; rm -rf $ISOLATED' EXIT
+$B -f /dev/null new-session -d -s lab -n alpha -x 150 -y 45
+$B new-window -d -t lab -n beta \; new-window -d -t lab -n gamma \; new-session -d -s oss -n delta
+$B set-environment -g XDG_CONFIG_HOME "$XDG_CONFIG_HOME" \; set-environment -g XDG_STATE_HOME "$XDG_STATE_HOME"
+$B run-shell "'$ROOT/pitwall.tmux'"
+lane() { $B set -p -t "$1" @pitwall_state "$2" \; set -p -t "$1" @pitwall_harness codex \; select-pane -t "$1" -T "task of ${1#*:}"; }
+lane lab:alpha asking; lane lab:beta idle; lane lab:gamma working; lane oss:delta idle
+BASH_BIN=bash # the board runs on the bash pitwall.tmux would pick
+for b in /opt/homebrew/bin/bash /usr/local/bin/bash; do [ -x "$b" ] && BASH_BIN=$b && break; done
+$B new-session -d -s ui -x 150 -y 45 "env TERM=xterm-256color '$BASH_BIN' '$ROOT/bin/pitwall-board'"
+screen() { $B capture-pane -p -t ui; }
+until_screen() { # until_screen <grep pattern> [absent]: wait up to 4 s for the screen to show (or lose) it
+  i=0
+  while [ $i -lt 40 ]; do
+    if [ "${2:-}" = absent ]; then screen | grep -q -- "$1" || return 0; else screen | grep -q -- "$1" && return 0; fi
+    sleep 0.1; i=$((i + 1))
+  done
+  echo "FAIL  the board never showed${2:+ the absence of} '$1'"; fail=1 # a timeout is a failure, not a skipped check
+  return 1
+}
+keys() { $B send-keys -t ui "$@"; sleep 0.3; }
+esc() { $B send-keys -t ui Escape; sleep 1.2; } # on bash 3.2 a lone esc waits a second to rule out an arrow
+row() { screen | grep -E "[○◆✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] $1 "; }
+
+until_screen delta && eq "the board lists every lane" "$(screen | grep -cE '[○◆✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (alpha|beta|gamma|delta) ')" 4
+keys -l /; keys -l del
+until_screen alpha absent && eq "/ filters as you type" "$(screen | grep -cE '[○◆✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (alpha|delta) ')" 1
+esc
+until_screen alpha && eq "esc clears the filter" "$(screen | grep -cE '[○◆✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (alpha|beta|gamma|delta) ')" 4
+
+eq "the cursor stays on its lane when the filter goes" "$(row delta | grep -c '▌')" 1
+keys -l d; keys -l v # first row: the most urgent lane, alpha, asking
+eq "v selects the lane under the cursor" "$(row alpha | grep -c '●')" 1
+lane lab:alpha idle # alpha drops below gamma: rows re-sort under the selection
+sleep 1.6
+eq "the selection follows the lane when rows re-sort" "$(row alpha | grep -c '●') $(row gamma | grep -c '●')" "1 0"
+keys -l /; keys -l del; keys Enter
+until_screen 'hidden by the filter' && eq "selected lanes the filter hides are counted" "$(screen | grep -c '1 hidden by the filter')" 1
+esc
+eq "esc clears the selection first" "$(screen | grep -c 'selected') $(screen | grep -cE '[○◆✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (alpha|delta) ')" "0 1"
+esc
+until_screen alpha && eq "then the filter" "$(screen | grep -cE '[○◆✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (alpha|beta|gamma|delta) ')" 4
+eq "and the filter line is gone, not just its rows" "$(screen | grep -cE '^ +/ ')" 0
+
+keys -l /; keys -l lab; keys Enter; keys -l V
+eq "V selects everything shown" "$(screen | grep -c '3 selected')" 1
+keys -l m; keys -l c; keys -l parked; keys Enter
+sleep 0.8
+eq "m moves exactly the selection" "$($B list-windows -t '=parked' -F '#W' | sort | tr '\n' ' ')" "alpha beta gamma "
+eq "and leaves the rest where it was" "$($B list-windows -t '=oss' -F '#W' | tr '\n' ' ')" "delta "
+eq "and the selection is cleared" "$(screen | grep -c 'selected')" 0
+esc; keys -l g; keys -l g
+until_screen WORKSPACES && eq "g g shows one row per workspace" "$(screen | grep -cE '^ *▌? *(oss|parked) +[0-9]+ lane')" 2
+n=0; while ! screen | grep -q '▌ *oss ' && [ $n -lt 4 ]; do keys -l n; n=$((n + 1)); done
+keys -l v
+eq "v in the workspaces view selects that workspace's lanes" "$(screen | grep -c 'move 1 lane ')" 1
+esc
+keys Enter
+until_screen "view state" && eq "⏎ opens a workspace, filter cleared: only its lanes" "$(screen | grep -cE '[○◆✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (alpha|beta|gamma|delta) ')" 1
+$B kill-server
 
 exit $fail

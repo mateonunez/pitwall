@@ -31,6 +31,7 @@ pitwall: see and steer coding agents from tmux
   pitwall install [--write] show (or add) the hook lines for Claude Code and Codex
   pitwall doctor            what is missing; exits 1 when something is
   pitwall demo [stop]       a throwaway tmux server with fake lanes, to look at pitwall
+  pitwall keys              every key, in tmux and in the board
   pitwall --version         the installed version
 EOF
 }
@@ -539,6 +540,24 @@ case ${1:-} in
   install) shift; cmd_install "${1:-}" ;;
   doctor) cmd_doctor ;;
   demo) shift; cmd_demo "${1:-}" ;;
+  keys)
+    k() { tmux show -gqv "@pitwall-key-$1" 2>/dev/null || true; }
+    cat <<EOF
+In tmux (prefix, then)       also listed by tmux's own help, prefix ?
+  $(printf '%-4s' "$(k board | grep . || echo A)") the board
+  $(printf '%-4s' "$(k next | grep . || echo a)") next lane that needs you; again to cycle
+  $(printf '%-4s' "$(k workspaces | grep . || echo W)") workspaces: go to one, c new, r rename
+  $(printf '%-4s' "$(k restore | grep . || echo R)") restore the lanes a dead tmux took with it
+
+In the board                 ? shows these there too
+  n e  d D  1-9    down, up · first, last · a row shown
+  i ⏎              jump into the lane
+  /  //            filter as you type · search the lanes' output (on ⏎)
+  w  g  s          one workspace · view by state, workspace, or one row each · sort
+  v  V  m          select · select everything shown · move to a workspace
+  esc  h q         drop selection, then filter, then close · close
+EOF
+    ;;
   -v | --version | version) cat "$DIR/version.txt" ;;
   -h | --help | help | "") usage ;;
   *) echo "pitwall: unknown command $1" >&2; usage >&2; exit 1 ;;

@@ -1,7 +1,7 @@
 # pitwall
 
 <p align="center">
-  <img src="preview/pitwall-board.png" alt="The pitwall board over a tmux session: lanes grouped under Needs you, Working and Idle, each with its glyph, name, session, task, harness and age; the selected lane ait.2 is asking, and a live preview of its pane shows the permission prompt it is waiting on. The status line below marks the windows with their most urgent lane." width="820">
+  <img src="preview/pitwall-board.png" alt="The pitwall board over a tmux session: tabs for the lab and oss workspaces, a filter reading / ait that leaves two of six lanes, both selected with a blue dot, the one under the cursor asking for a permission shown in the live preview, and a footer reading 2 selected, m move 2 lanes." width="820">
 </p>
 
 <p align="center">
@@ -46,7 +46,7 @@ Restart your agents so they pick up the hooks; Codex asks you to trust each new 
 
 - **A status line that says who needs you.** `◆` amber: the agent is asking you something. `✓` green: it finished while you were elsewhere, and stays until you visit. A spinner while it works, `○` when it rests, `✗` when it has gone. I slip the glyph in front of the window name inside the format your theme already has, so your theme stays yours.
 - **Instant, and quiet when nothing moves.** A change redraws every status line at once and shows a short toast to anyone not already looking at that lane. The spinner turns only while something works, then the ticker exits.
-- **The board.** `prefix A` groups lanes into Needs you, Working and Idle, with a live preview of the selected pane. Keys are Colemak and vim: `n` `e` to move, `i` or `⏎` to jump in, `1`–`9` to pick, `d` `D` for first and last, `m` to move the lane to another workspace, `h` `q` `esc` to close. Arrows work too.
+- **The board, a manager for your lanes.** `prefix A` lists every lane with a live preview of the one under the cursor, and lets you find and handle them from the keyboard: filter as you type (`/`), search what the lanes printed (`//`), look at one workspace (`w`), group by state or workspace, or see one row per workspace when there are fifty of them (`g`), select (`v`, `V`) and move what you selected (`m`). Keys are Colemak and vim, listed below and behind `?`.
 - **The jump.** `prefix a` takes you to the next lane that is asking or done. Press it again to cycle.
 - **Several agents in one window.** Each pane is its own lane (`ait.1`, `ait.2`); the window shows the most urgent of them.
 - **Names that mean something.** A window running Claude Code shows up as `2.1.323`; I name it after the agent's directory instead.
@@ -66,6 +66,32 @@ Restart your agents so they pick up the hooks; Codex asks you to trust each new 
 | `prefix a` | Next lane that needs you |
 | `prefix R` | Restore the lanes a dead tmux took with it |
 | `prefix W` | Workspaces: go to one, create or rename one |
+
+Each of them carries a note, so tmux's own help (`prefix ?`) lists them too, and `pitwall keys` prints this whole page of keys in the terminal. In the board:
+
+| Key | Does |
+| --- | --- |
+| `n` `e` · `d` `D` · `1`–`9` | Down, up · first, last · a row shown |
+| `i` `⏎` | Jump into the lane |
+| `/` | Filter as you type: name, workspace, task, agent, state. `ctrl-n` `ctrl-e` move while typing, `⏎` keeps the filter, `esc` drops it |
+| `//` | Search the lanes' recent output (`//rate limit`), on `⏎` |
+| `w` | One workspace, the next one, then all again |
+| `g` | View by state, by workspace, or one row per workspace (`⏎` opens one, `v` selects its lanes) |
+| `s` | Sort by urgency, newest or name |
+| `v` · `V` | Select the lane · select everything shown (or unselect it) |
+| `m` | Move the selection, or the lane under the cursor, to a workspace; `c` there makes a new one |
+| `esc` | Drop the selection, then the filter, then close |
+| `?` · `h` `q` | Every key · close |
+
+### Selecting, safely
+
+Selections are where list tools usually let you down, so mine follow a few rules, each covered by a test that drives the real board:
+
+- **A selection follows lanes, not rows.** Lanes re-sort as their states change; a selected lane stays selected wherever it moves.
+- **Nothing hidden is acted on silently.** When the filter hides selected lanes, the footer counts them ("1 hidden by the filter"), and so does the move prompt.
+- **The target is always spelled out.** With a selection, the footer reads "m move 3 lanes"; without one, `m` acts on the lane under the cursor.
+- **One layer at a time.** `esc` drops the selection first, then the filter and the workspace, and only then closes the board.
+- **Nothing stays armed.** A selected lane that closes leaves the selection, with a note; a move clears the selection.
 
 | Command | Does |
 | --- | --- |
@@ -88,6 +114,7 @@ Restart your agents so they pick up the hooks; Codex asks you to trust each new 
 | `pitwall install [--write]` | The hook lines for Claude Code and Codex |
 | `pitwall doctor` | What is missing |
 | `pitwall demo [stop]` | A throwaway server with fake lanes |
+| `pitwall keys` | Every key, in tmux and in the board |
 
 ## Options
 

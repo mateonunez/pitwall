@@ -9,6 +9,9 @@ Read [README.md](README.md) for the product and [CONTEXT.md](CONTEXT.md) for its
 - Rendering is tmux formats reading pane and window options. Do not add a `#()` job, a daemon or polling to show state. `bin/pitwall-tick` is the one exception, and it runs only while a lane works.
 - `pitwall.tmux` runs on every config reload. Every change it makes is idempotent and composes with the user's theme: inject into existing formats, never replace them.
 - The board is Colemak first: `n` `e` move, `i` jumps in, `h` closes, `d` `D` first and last, arrows as a fallback. `choose-tree` cannot do this; keep the board our own.
+- The board's selection rules are part of its contract: marks are pane ids, never rows; selected lanes the filter hides are counted wherever an action is offered; the footer names the target; `esc` peels the selection, then the filter and scope, then closes; a group action clears the selection. A change that touches selection keeps or extends the board tests that check these.
+- Board tests drive the real board in its own tmux server (keys in with `send-keys`, screen out with `capture-pane`). Assert what a person would see, such as the filter line disappearing, not only row counts.
+- Two bash traps the board has met: `shopt -s nocasematch` also changes `case`, so enable it only around the match that needs it; and `x='' f` assigns `x` only for that call of `f`, so end assignments with `;`.
 - `bin/pitwall-board` targets the macOS bash 3.2 as well as bash 5. Write `${VAR}` before any non-ASCII character, and never put multibyte text in a padded `printf` column.
 - Lists that come back from tmux are tab-separated, and a field that may be empty gets a placeholder in the format itself (`#{?x,#{x},-}`): `read` merges consecutive tabs, and tmux before 3.5 prints control characters escaped.
 - Add a check to `test/run.sh` for nontrivial logic. It runs on a throwaway tmux server (`tmux -L pitwall-test-$$`).

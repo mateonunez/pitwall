@@ -72,10 +72,11 @@ tmux set-hook -g 'client-attached[73]' "$CLEAR"
 # The board wants a bash that reads with sub-second timeouts; the macOS /bin/bash 3.2 only manages whole seconds.
 BASH_BIN=bash
 for b in /opt/homebrew/bin/bash /usr/local/bin/bash; do [ -x "$b" ] && BASH_BIN=$b && break; done
-tmux bind "$KEY_BOARD" display-popup -E -w 84% -h 78% -b rounded -S "fg=#404040" "'$BASH_BIN' '$DIR/bin/pitwall-board'"
-tmux bind "$KEY_NEXT" run-shell "'$DIR/bin/pitwall' next"
-tmux bind "$KEY_WORKSPACES" display-popup -E -w 60% -h 50% -b rounded -S "fg=#404040" "'$BASH_BIN' '$DIR/bin/pitwall-ws'"
-tmux bind "$KEY_RESTORE" display-popup -E -w 70% -h 50% -b rounded -S "fg=#404040" "'$DIR/bin/pitwall' _restore-prompt"
+# Every key carries a note (-N), so tmux's own help (prefix ?) lists pitwall's keys too.
+tmux bind -N "pitwall: the board (/ filter, w workspace, v select, m move, ? keys)" "$KEY_BOARD" display-popup -E -w 84% -h 78% -b rounded -S "fg=#404040" "'$BASH_BIN' '$DIR/bin/pitwall-board'"
+tmux bind -N "pitwall: next lane that needs you (again to cycle)" "$KEY_NEXT" run-shell "'$DIR/bin/pitwall' next"
+tmux bind -N "pitwall: workspaces (go, c new, r rename)" "$KEY_WORKSPACES" display-popup -E -w 60% -h 50% -b rounded -S "fg=#404040" "'$BASH_BIN' '$DIR/bin/pitwall-ws'"
+tmux bind -N "pitwall: restore the lanes a dead tmux took with it" "$KEY_RESTORE" display-popup -E -w 70% -h 50% -b rounded -S "fg=#404040" "'$DIR/bin/pitwall' _restore-prompt"
 
 # Lanes may already be working when the plugin loads (or a client attaches): start the spinner.
 tmux set-hook -g 'client-attached[74]' "run-shell -b \"'$DIR/bin/pitwall-tick'\""

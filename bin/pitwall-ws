@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pitwall-ws [move <window-id> <lane-name>]: pick a workspace (a tmux session) to switch to, or to move a lane into.
+# pitwall-ws [move "<window-id> …" <label>]: pick a workspace (a tmux session) to switch to, or to move a lane into.
 # Keys follow Colemak + vim: n/e move, i or ⏎ choose, c create a new one, r rename (switch only), h/q/esc close.
 # Runs in a popup (prefix W), or inside the board when you press m there. Works on bash 3.2 and 5.
 
@@ -12,8 +12,8 @@ BOLD="${E}[1m" R="${E}[0m" EOL="${E}[K"
 mode=switch window='' lane=''
 [ "${1:-}" = move ] && mode=move window=$2 lane=$3
 here=$(tmux display -p '#{client_session}' 2>/dev/null)
-[ "$mode" = move ] && here=$(tmux display -p -t "$window" '#{session_name}' 2>/dev/null)
-sel=0 W_name=() W_attached=() W_windows=() W_ask=() W_done=() W_work=() W_idle=()
+[ "$mode" = move ] && here=$(tmux display -p -t "${window%% *}" '#{session_name}' 2>/dev/null)
+pending='' sel=0 W_name=() W_attached=() W_windows=() W_ask=() W_done=() W_work=() W_idle=()
 
 load() {
   local name attached windows ask done work idle
@@ -67,8 +67,11 @@ ask() { # ask <prompt> → $answer, read on the bottom line with the cursor show
 
 choose() { # act on a workspace name
   if [ "$mode" = move ]; then
-    [ "$1" = "$here" ] && return 0
-    "$PITWALL" _move "$window" "$1" >/dev/null
+    local w
+    for w in $window; do # every window of the selection; one already there stays
+      [ "$(tmux display -p -t "$w" '#{session_name}' 2>/dev/null)" = "$1" ] && continue
+      "$PITWALL" _move "$w" "$1" >/dev/null
+    done
   else
     tmux switch-client -t "=$1"
   fi
@@ -80,11 +83,12 @@ printf '%s[?25l%s[?7l%s[2J' "$E" "$E" "$E"
 load
 while :; do
   draw
-  IFS= read -rsn1 k || exit 0
-  if [ "$k" = "$E" ]; then
-    rest=''
-    IFS= read -rsn2 -t 1 rest
-    case $rest in '[A') k=e ;; '[B') k=n ;; '[C') k=i ;; '[D') k=h ;; *) exit 0 ;; esac
+  if [ -n "$pending" ]; then k=${pending:0:1} pending=${pending:1}; else IFS= read -rsn1 k || exit 0; fi
+  if [ "$k" = "$E" ]; then # an arrow, or esc: what followed that is not an arrow is played back as keys
+    rest='' r2=''
+    IFS= read -rsn1 -t 1 rest
+    [ "$rest" = '[' ] && IFS= read -rsn1 -t 1 r2 && rest+=$r2
+    case $rest in '[A') k=e ;; '[B') k=n ;; '[C') k=i ;; '[D') k=h ;; '') exit 0 ;; *) exit 0 ;; esac
   fi
   case $k in
     n | j) ((sel < ${#W_name[@]} - 1)) && sel=$((sel + 1)) ;;
