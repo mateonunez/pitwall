@@ -485,11 +485,11 @@ cmd_demo() {
     \; set-environment -g XDG_STATE_HOME "${TMPDIR:-/tmp}/pitwall-demo-state" \
     \; new-session -d -s lab -n opentimeline -x 160 -y 40
   $T set -g prefix2 C-a \; set -g mouse on \; set -g status-interval 2 \
-    \; set -g status-style 'bg=#0a0a0a,fg=#6b7280' \; set -g status-left '' \
-    \; set -g window-status-format ' #I #W ' \
-    \; set -g window-status-current-format '#[fg=#0a0a0a,bg=#f59e0b,bold] #I #W ' \
-    \; set -g status-right '#[fg=#9ca3af]#S  %H:%M ' \; set -g status-right-length 80 \
-    \; set -g allow-rename off \; set -g automatic-rename off
+    \; set -g status-style 'bg=#0a0a0a,fg=#6b7280' \; set -g window-style 'bg=#0a0a0a' \
+    \; set -g pane-border-style 'fg=#262626' \; set -g pane-active-border-style 'fg=#f59e0b' \
+    \; set -g allow-rename off \; set -g automatic-rename off \
+    \; set -g @pitwall-layout tabs \; set -g @pitwall-system on \; set -g @pitwall-quota off \
+    \; set -g @pitwall_quota '#[fg=#6b7280]claude 5h #[fg=#9ca3af]12%#[fg=#6b7280] ↻3h · wk #[fg=#9ca3af]34%#[fg=#6b7280] ↻5d   codex wk #[fg=#9ca3af]41%#[fg=#6b7280] ↻2d' 
   pane() { # target state harness age-in-seconds task
     $T set -p -t "$1" @pitwall_state "$2" \; set -p -t "$1" @pitwall_harness "$3" \
       \; set -p -t "$1" @pitwall_since "$(($(date +%s) - $4))" \; select-pane -t "$1" -T "$5"
@@ -497,25 +497,26 @@ cmd_demo() {
   lane() { # window state harness age-in-seconds task, then what the pane shows
     $T list-windows -t lab -F '#W' | grep -qx "$1" || $T new-window -t lab -n "$1"
     pane "lab:$1" "$2" "$3" "$4" "$5"
-    $T send-keys -t "lab:$1" "clear; printf '$6'" Enter
+    show "lab:$1" "$6"
   }
+  show() { $T respawn-pane -k -t "$1" "printf '$2'; exec sleep 86400"; } # what the lane shows, no command echoed
   lane opentimeline asking codex 180 "Cut the 0.2.0 release" \
     '\n  • Ran pnpm test\n    └ 512 passing\n\n  $ pnpm release --tag v0.2.0\n\n  Allow command?  › 1. Yes   2. Yes, always   3. No\n'
   lane website done claude 720 "Add the Spotify now-playing card" \
     '\n  ⏺ Update(app/components/now-playing.tsx)\n    ⎿  Added 42 lines\n\n  ⏺ The card renders the current track and falls back to the last played one.\n'
   lane ait working codex 2460 "Sync Linear issues into the RAG index" \
     '\n  • Explored\n    └ Read packages/connectors/linear/src/sync.ts\n\n  • Running pnpm --filter @ait/linear test\n'
-  lane dotfiles idle claude 0 "Colemak keys for the pitwall board" \
-    '\n  ⏺ Board keys now follow nvim: n/e move, i jumps in, h closes.\n'
+  lane dotfiles idle claude 0 "Tabs for the tmux status line" \
+    '\n  ⏺ Workspaces are tab groups on top; the limits and the machine sit on the bottom rule.\n'
   # Two agents in one window: each pane is its own lane, the window shows the more urgent one.
   p=$($T split-window -h -d -P -F '#{pane_id}' -t lab:ait)
   pane "$p" asking claude 60 "Review the Linear sync diff"
-  $T send-keys -t "$p" "clear; printf '\n  ⏺ Bash(pnpm --filter @ait/linear lint)\n\n  Do you want to proceed?\n  ❯ 1. Yes\n    2. No\n'" Enter
+  show "$p" '\n  ⏺ Bash(pnpm --filter @ait/linear lint)\n\n  Do you want to proceed?\n  ❯ 1. Yes\n    2. No\n'
   $T new-window -t lab -n notes
   # A second workspace, so moving lanes and the workspace picker have somewhere to go.
   $T new-session -d -s oss -n malock -x 160 -y 40
   pane oss:malock asking codex 300 "Publish the 2.0 release notes"
-  $T send-keys -t oss:malock "clear; printf '\n  • Ran npm publish --dry-run\n\n  Allow command?  › 1. Yes   2. No\n'" Enter
+  show oss:malock '\n  • Ran npm publish --dry-run\n\n  Allow command?  › 1. Yes   2. No\n'
   $T select-window -t lab:dotfiles
   $T run-shell "'$DIR/pitwall.tmux'"
   # Lanes move on their own so you can watch: ait finishes in 15 s while you look elsewhere, then a new lane starts.

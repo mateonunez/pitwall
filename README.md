@@ -1,7 +1,7 @@
 # pitwall
 
 <p align="center">
-  <img src="preview/pitwall-board.png" alt="The pitwall board over a tmux session: tabs for the lab and oss workspaces, a filter reading / ait that leaves two of six lanes, both selected with a blue dot, the one under the cursor asking for a permission shown in the live preview, and a footer reading 2 selected, m move 2 lanes." width="820">
+  <img src="preview/pitwall-board.png" alt="The pitwall board over the tabs layout: on top the lab workspace open into numbered tabs under an amber underline and oss as a pill with one lane asking. In the board a filter reading / ait leaves two of six lanes, both selected with a blue dot; the one under the cursor, asking for a permission, shows in the live preview; the footer reads 2 selected, m move 2 lanes. At the bottom a thin rule with the usage limits and the machine." width="820">
 </p>
 
 <p align="center">
