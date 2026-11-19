@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.9](https://github.com/mateonunez/pitwall/compare/v0.1.8...v0.1.9) (2026-11-19)
+
+
+### Bug Fixes
+
+* background commands exit 0 when there is nothing to do, so tmux shows no error ([#12](https://github.com/mateonunez/pitwall/issues/12)) ([4dff234](https://github.com/mateonunez/pitwall/commit/4dff234cebd6b1f0b6017bc3384643c93ead3420))
+
 ## [0.1.8](https://github.com/mateonunez/pitwall/compare/v0.1.7...v0.1.8) (2026-11-19)
 
 
