@@ -200,9 +200,9 @@ eq "and one whose session no pane holds changes nothing" "$(state s:two)" workin
 FAKE=$(mktemp -d); ISOLATED="$ISOLATED $FAKE"
 for a in codex 2.1.327; do cp /bin/sleep "$FAKE/$a"; command -v codesign >/dev/null && codesign -f -s - "$FAKE/$a" 2>/dev/null; done; mkdir -p "$FAKE/proj" "$FAKE/home"
 printf '{"id":"cx-b","thread_name":"Fix the board"}\n' >"$FAKE/home/session_index.jsonl"
-CA=$($T new-window -d -P -F '#{pane_id}' -t s: -n cxa -c "$FAKE/proj" "$FAKE/codex 300")
-CB=$($T new-window -d -P -F '#{pane_id}' -t s: -n cxb -c "$FAKE/proj" "$FAKE/codex 300")
-CL=$($T new-window -d -P -F '#{pane_id}' -t s: -n cl -c "$FAKE" "$FAKE/2.1.327 300")
+CA=$($T new-window -d -P -F '#{pane_id}' -t s: -n cxa -c "$FAKE/proj" "exec $FAKE/codex 300")
+CB=$($T new-window -d -P -F '#{pane_id}' -t s: -n cxb -c "$FAKE/proj" "exec $FAKE/codex 300")
+CL=$($T new-window -d -P -F '#{pane_id}' -t s: -n cl -c "$FAKE" "exec $FAKE/2.1.327 300")
 $T select-pane -t "$CA" -T 'Ship the docs | proj' \; select-pane -t "$CB" -T 'Fix the board | proj'
 sleep 0.3
 daemon() { echo "{\"session_id\":\"$1\",\"cwd\":\"$2\"}" | TMUX="$SOCK,0,0" TMUX_PANE=%999 CODEX_HOME="$FAKE/home" "$ROOT/bin/pitwall-hook" "$3" "$4"; }
