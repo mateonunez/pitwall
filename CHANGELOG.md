@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/mateonunez/pitwall/compare/v0.1.10...v0.2.0) (2026-11-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* one dashboard on prefix Space for lanes, workspaces, actions and OpenTimeline ([#16](https://github.com/mateonunez/pitwall/issues/16))
+
+### Features
+
+* one dashboard on prefix Space for lanes, workspaces, actions and OpenTimeline ([#16](https://github.com/mateonunez/pitwall/issues/16)) ([2cbb9ac](https://github.com/mateonunez/pitwall/commit/2cbb9ac2f1cf214f0f4d274d92420a7a597e1cca))
+
 ## [0.1.10](https://github.com/mateonunez/pitwall/compare/v0.1.9...v0.1.10) (2026-11-19)
 
 
