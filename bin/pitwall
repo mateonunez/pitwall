@@ -317,7 +317,15 @@ cmd_saved() {
 
 resume_cmd() { # resume_cmd <harness> <sid>
   tpl=$(tmux show -gqv "@pitwall-resume-$1" 2>/dev/null)
-  case $1 in claude) tpl=${tpl:-claude --resume \{id\}} ;; codex) tpl=${tpl:-codex resume \{id\}} ;; *) return 1 ;; esac
+  case $1 in
+    claude) tpl=${tpl:-claude --resume \{id\}} ;;
+    codex) tpl=${tpl:-codex resume \{id\}} ;;
+    hermes) tpl=${tpl:-hermes --resume \{id\}} ;;
+    grok) tpl=${tpl:-grok --resume \{id\}} ;;
+    opencode) tpl=${tpl:-opencode --session \{id\}} ;;
+    pi) tpl=${tpl:-pi --session \{id\}} ;;
+    *) [ -n "$tpl" ] || return 1 ;; # any other agent, once @pitwall-resume-<agent> says how
+  esac
   printf '%s' "$tpl" | sed "s/{id}/$2/g"
 }
 
@@ -460,7 +468,37 @@ else:
     print(f"  '{hook}' <Event> {harness}")
 EOF
   done
+  install_hermes "$write"
   [ "$write" = --write ] || echo "run 'pitwall install --write' to add them; restart the agents to pick them up"
+}
+
+# Hermes keeps its hooks in YAML next to the rest of its config, with comments worth keeping: the block is
+# appended as text, never rewritten. A config that already has a hooks: block gets the lines to paste instead.
+# Hermes events, mapped onto the hook's: a turn starts (pre_llm_call), waits on a person (approval, a question,
+# sudo), resumes, ends (on_session_end fires once per turn), and the session closes (on_session_finalize).
+HERMES_EVENTS='on_session_open:SessionStart pre_llm_call:UserPromptSubmit on_human_input_request:PermissionRequest on_human_input_resolved:PostToolUse on_session_end:Stop on_session_finalize:SessionEnd'
+install_hermes() {
+  file=${HERMES_HOME:-$HOME/.hermes}/config.yaml
+  [ -f "$file" ] || return 0 # no Hermes here
+  if grep -q pitwall-hook "$file"; then echo "hermes: hooks already installed in $file"; return 0; fi
+  block="# pitwall: lane states in tmux (pitwall install)
+hooks:"
+  for m in $HERMES_EVENTS; do
+    block="$block
+  ${m%%:*}:
+    - command: $HOOK ${m#*:} hermes
+      timeout: 5"
+  done
+  if grep -q '^hooks:' "$file"; then
+    echo "hermes: $file already has a hooks: block; add these under it:"
+    printf '%s\n' "$block" | sed '1,2d'
+  elif [ "${1:-}" = --write ]; then
+    cp -p "$file" "$file.bak-pitwall" && printf '\n%s\n' "$block" >>"$file"
+    echo "hermes: added ${HERMES_EVENTS%% *}… to $file (backup: $file.bak-pitwall); Hermes asks you to approve each hook once"
+  else
+    echo "hermes: would append to $file:"
+    printf '%s\n' "$block" | sed 's/^/  /'
+  fi
 }
 
 cmd_doctor() {
@@ -471,6 +509,8 @@ cmd_doctor() {
   check "pitwall loaded in this server" '[ -n "$(tmux show -gqv @pitwall-state-fmt 2>/dev/null)" ]' "run-shell $DIR/pitwall.tmux"
   check "Claude Code hooks" 'grep -q pitwall-hook "$HOME/.claude/settings.json" 2>/dev/null' "pitwall install --write"
   check "Codex hooks" 'grep -q pitwall-hook "$HOME/.codex/hooks.json" 2>/dev/null' "pitwall install --write"
+  [ -f "${HERMES_HOME:-$HOME/.hermes}/config.yaml" ] &&
+    check "Hermes hooks" 'grep -q pitwall-hook "${HERMES_HOME:-$HOME/.hermes}/config.yaml"' "pitwall install --write"
   check "python3 (only for install)" 'command -v python3 >/dev/null'
   return $ok
 }

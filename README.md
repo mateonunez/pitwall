@@ -14,7 +14,7 @@ Hey there! I'm **pitwall**. You run a handful of coding agents in tmux, one per 
 
 Your agents tell me their state through a hook. I never poll, never read a transcript and never touch the network.
 
-> **Status:** pre-1.0, used every day on one machine with Claude Code and Codex. Expect behaviour to change between commits.
+> **Status:** pre-1.0, used every day on one machine with Claude Code, Codex and Hermes. Expect behaviour to change between commits.
 
 ## Quick start
 
@@ -40,7 +40,23 @@ pitwall install --write   # adds them, with a backup beside each file
 pitwall doctor            # says what is missing, and exits 1 when something is
 ```
 
-Restart your agents so they pick up the hooks; Codex asks you to trust each new one. Only want to look? `pitwall demo` starts a throwaway tmux server with a few fake lanes, and `pitwall demo stop` removes it.
+Restart your agents so they pick up the hooks; Codex asks you to trust each new one, Hermes to approve each once. For Hermes the installer appends a `hooks:` block to `~/.hermes/config.yaml` and keeps the rest of the file as it is; a config that already has one gets the lines to paste. Only want to look? `pitwall demo` starts a throwaway tmux server with a few fake lanes, and `pitwall demo stop` removes it.
+
+## Other agents
+
+Claude Code, Codex and Hermes report through hooks that `pitwall install` sets up. Any pane running gemini, qwen, opencode, grok, pi, droid, amp, cursor-agent, copilot, crush, goose, aider or kiro-cli shows up as a lane too, before any hook (`@pitwall-agents` holds the list as a regex of process names).
+
+To give another agent real states, have its hooks run `bin/pitwall-hook <Event> <agent>` with a JSON payload on stdin that carries `session_id` and `cwd`:
+
+| Event | State |
+| --- | --- |
+| `SessionStart` | idle |
+| `UserPromptSubmit` · `PreToolUse` · `PostToolUse` | working |
+| `PermissionRequest` | asking |
+| `Stop` | done, or idle if you are looking at it |
+| `SessionEnd` | gone |
+
+Restore resumes grok, opencode and pi out of the box; any other agent once `@pitwall-resume-<agent>` says how (`'mytool --resume {id}'`).
 
 ## What you get
 
@@ -114,7 +130,7 @@ Selections are where list tools usually let you down, so mine follow a few rules
 | `pitwall ot bell <token>` | Needs you's count in the status line; `off` to stop |
 | `pitwall new <name> [--agent codex]` | Worktree, window and agent in one go |
 | `pitwall done @N` | Review the diff, then remove the worktree if you confirm |
-| `pitwall install [--write]` | The hook lines for Claude Code and Codex |
+| `pitwall install [--write]` | The hook lines for Claude Code, Codex and Hermes |
 | `pitwall doctor` | What is missing |
 | `pitwall demo [stop]` | A throwaway server with fake lanes |
 | `pitwall keys` | Every key, in tmux and in the board |
@@ -130,7 +146,8 @@ Set them before the plugin loads, like any tmux option.
 | `@pitwall-key-restore` | `R` | Key for restore |
 | `@pitwall-key-workspaces` | `W` | Key for workspaces |
 | `@pitwall-agent` | `claude` | Agent `pitwall new` starts |
-| `@pitwall-resume-claude` · `-codex` | `claude --resume {id}` · `codex resume {id}` | How a saved session resumes |
+| `@pitwall-agents` | claude, codex, gemini, qwen, opencode, grok, pi and more | Processes that make a pane a lane before any hook, as a regex |
+| `@pitwall-resume-claude` · `-codex` · `-hermes` | `claude --resume {id}` · `codex resume {id}` · `hermes --resume {id}` | How a saved session resumes |
 | `@pitwall-quota` | `on` | Usage limits in the status line |
 | `@pitwall-codexbar` | the CLI inside CodexBar.app | Path to `CodexBarCLI` |
 | `@pitwall-color-asking` · `-done` · `-gone` | `#f59e0b` · `#00c758` · `#fb2c36` | Glyph colours |
@@ -148,7 +165,7 @@ Set them before the plugin loads, like any tmux option.
 
 ```mermaid
 flowchart LR
-  agents(["Claude Code · Codex"]) -- hook events --> hook["bin/pitwall-hook<br/>sh, hot path"]
+  agents(["Claude Code · Codex · Hermes"]) -- hook events --> hook["bin/pitwall-hook<br/>sh, hot path"]
   hook -- "@pitwall_state" --> tmux[("tmux window options")]
   hook -- "while working" --> tick["bin/pitwall-tick<br/>spinner frames"]
   tick -- "@pitwall_spin" --> tmux

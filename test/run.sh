@@ -65,6 +65,8 @@ eq "spinner in the title → working without hooks" "$(state s:one)" working
 $T select-pane -t "$P1" -T '[ . ] Action Required | Approve the deploy | dir'
 eq "Codex's Action Required title → asking without hooks" "$(state s:one)" asking
 eq "and the task keeps only its words" "$(TMUX="$SOCK,0,0" "$ROOT/bin/pitwall" _lanes | awk -F '\t' '$4 == "one" { print $8 }')" "Approve the deploy"
+$T select-pane -t "$P1" -T 'hermes chat'
+eq "Hermes, titled hermes, is a lane without hooks too" "$(state s:one)" idle
 $T select-pane -t "$P1" -T '⠙ Working on it | dir'
 eq "task loses its spinner and Codex dir" "$(TMUX="$SOCK,0,0" "$ROOT/bin/pitwall" _lanes | awk -F '\t' '$4 == "one" { print $8 }')" "Working on it"
 
@@ -142,6 +144,11 @@ eq "the resume command reached its pane" "$(ran)" yes
 eq "a lane closed on purpose stays closed" "$($T list-windows -t '=work' -F '#{window_index}' | grep -c '^3$')" 0
 eq "restoring twice opens nothing new" "$(pw restore --count)" 0
 eq "saved tells running from closed" "$(pw saved | awk '{ print $1 }' | sort | uniq -c | awk '{ printf "%s=%s ", $2, $1 }')" "closed=1 running=2 "
+printf 'grok\ts-grok\t/tmp\tgone\t1\tg\t1\t1\t%s\n' "$now" >"$LANES/s-grok"
+printf 'mystery\ts-myst\t/tmp\tgone\t1\tg\t2\t1\t%s\n' "$now" >"$LANES/s-myst"
+eq "restore knows how grok resumes" "$(pw restore --dry | grep -c '(grok)')" 1
+eq "an agent it does not know waits for @pitwall-resume-<agent>" "$(pw restore --dry | grep -c 'unknown agent mystery')$($T set -g @pitwall-resume-mystery 'mystery --again {id}'; pw restore --dry | grep -c '(mystery)')" 11
+rm -f "$LANES/s-grok" "$LANES/s-myst"
 
 # --- usage limits, from a synthetic CodexBar payload -------------------------------------------------------
 quota() { printf '%s' "$1" | "$ROOT/bin/pitwall-quota" 1800000000 | tail -1; }
@@ -198,7 +205,7 @@ eq "and one whose session no pane holds changes nothing" "$(state s:two)" workin
 # and exits 0). Two Codex in one directory are told apart by the thread name in their title; a lone Claude by
 # its directory. Fake agents: copies of sleep named like the real processes.
 FAKE=$(mktemp -d "$ROOT/.fake.XXXXXX"); ISOLATED="$ISOLATED $FAKE" # not /tmp: CI mounts it noexec
-for a in codex 2.1.327; do # macOS names a process after its binary, Linux after its argv[0]
+for a in codex 2.1.327 opencode; do # macOS names a process after its binary, Linux after its argv[0]
   if command -v codesign >/dev/null; then cp /bin/sleep "$FAKE/$a" && codesign -f -s - "$FAKE/$a" 2>/dev/null
   else printf '#!/bin/bash\nexec -a %s python3 -c "import time; time.sleep(int(\\"$1\\"))"\n' "$a" >"$FAKE/$a"; chmod +x "$FAKE/$a"; fi
 done; mkdir -p "$FAKE/proj" "$FAKE/home"
@@ -220,7 +227,9 @@ daemon cx-z "$FAKE/proj" PreToolUse codex
 eq "two Codex and no thread name to tell them apart: neither is touched" "$($T display -p -t "$CA" '#{@pitwall_state}')" ""
 echo "{\"session_id\":\"cl-1\",\"cwd\":\"$FAKE\"}" | TMUX="$SOCK,0,0" TMUX_PANE='' "$ROOT/bin/pitwall-hook" UserPromptSubmit claude
 eq "a Claude hook without tmux finds the one Claude in its directory" "$($T display -p -t "$CL" '#{@pitwall_state} #{@pitwall_name}')" "working $(basename "$FAKE")"
-$T kill-pane -t "$CA" \; kill-pane -t "$CB" \; kill-pane -t "$CL"
+OC=$($T new-window -d -P -F '#{pane_id}' -t s: -n oc -c "$FAKE" "exec $FAKE/opencode 300"); sleep 0.3
+eq "other agents are lanes before any hook, opencode here" "$($T display -p -t "$OC" '#{E:@pitwall-state-fmt}')" idle
+$T kill-pane -t "$CA" \; kill-pane -t "$CB" \; kill-pane -t "$CL" \; kill-pane -t "$OC"
 
 # A window moving out leaves no gap (tmux renumbers only on close), even when moved by hand; records follow.
 $T set -g renumber-windows on \; new-session -d -s r -n ra \; new-window -d -t r:1 -n rb \; new-window -d -t r:2 -n rc
@@ -248,6 +257,17 @@ eq "the machine sampler reads at least the cpu" "$("$ROOT/bin/pitwall-sys" --onc
 $T set -g @pitwall-layout inline \; run-shell "'$ROOT/pitwall.tmux'"
 eq "switching back gives the theme its status line again" "$($T show -gv status-position) $($T show -gwv pane-border-status)" "bottom off"
 eq "and tmux its own first line" "$($T show -gv 'status-format[0]' | grep -c pitwall-tabs)" 0
+
+# --- install: Hermes's YAML gets a block appended, never rewritten -----------------------------------------------
+H=$(mktemp -d); ISOLATED="$ISOLATED $H"; mkdir -p "$H/.claude" "$H/.codex" "$H/.hermes"
+printf '# my notes\nmodel: x\n' >"$H/.hermes/config.yaml"
+HOME=$H HERMES_HOME= "$ROOT/bin/pitwall" install --write >/dev/null
+eq "install appends six Hermes hooks" "$(grep -c 'pitwall-hook .* hermes$' "$H/.hermes/config.yaml")" 6
+eq "and keeps what was there, comments too" "$(head -2 "$H/.hermes/config.yaml" | tr '\n' ' ')" "# my notes model: x "
+HOME=$H HERMES_HOME= "$ROOT/bin/pitwall" install --write >/dev/null
+eq "a second install adds nothing" "$(grep -c '^hooks:' "$H/.hermes/config.yaml")" 1
+printf 'hooks:\n  pre_tool_call: []\n' >"$H/.hermes/config.yaml"
+eq "a config with its own hooks: block is left alone, the lines printed" "$(HOME=$H HERMES_HOME= "$ROOT/bin/pitwall" install --write | grep -c 'add these under it')$(grep -c pitwall "$H/.hermes/config.yaml")" 10
 
 # --- the board, driven like a person would: keys in, screen out -------------------------------------------------
 # Its own server with four known lanes (alpha, beta, gamma in lab; delta in oss), the board in a pane of its own.
