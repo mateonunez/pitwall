@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.4](https://github.com/mateonunez/pitwall/compare/v0.1.3...v0.1.4) (2026-11-19)
+
+
+### Features
+
+* a tabs layout, workspaces as tab groups on top and the machine on the panes' bottom rule ([c4c62eb](https://github.com/mateonunez/pitwall/commit/c4c62eb7229a0b65244ae362b16e3e6a4bcb7c57))
+
+
+### Bug Fixes
+
+* the machine sampler keeps its counters, so the network rate shows ([dd15efa](https://github.com/mateonunez/pitwall/commit/dd15efa749504b92d7a09f7005af0f5b1099be24))
+
 ## [0.1.3](https://github.com/mateonunez/pitwall/compare/v0.1.2...v0.1.3) (2026-11-19)
 
 
