@@ -77,7 +77,12 @@ if [ "$(opt @pitwall-layout inline)" = tabs ]; then
   AWAY="#[range=session|#{session_id}]#[fg=$PILL bg=$STRIP]$L#[fg=$MUTED bg=$PILL]#{session_name}#{?$A, #[fg=$ASK bold]◆$A#[nobold],}#{?$D, #[fg=$DONE bold]✓$D#[nobold],}#[fg=$PILL bg=$STRIP]$R#[norange] "
   RIGHT="#{?client_prefix,#[fg=$ASK bold]prefix#[nobold]  ,}#{?#{&&:#{@pitwall_restorable},#{!=:#{@pitwall_restorable},0}},#[fg=$ASK]↺ #{@pitwall_restorable}  ,}#{?#{&&:#{@pitwall_bell},#{!=:#{@pitwall_bell},0}},#[fg=$ASK bold]⚑ #{@pitwall_bell}#[nobold]  ,}"
   tmux set -g @pitwall-tabs-fmt "#[fill=$STRIP bg=$STRIP]#[align=left] #{S:#{?#{==:#{session_name},#{client_session}},$HERE,$AWAY}}#[align=right bg=$STRIP]$RIGHT"
-  tmux set -g @pitwall-rule-fmt "#{?pane_at_bottom,#{?pane_at_left,#[fg=$MUTED] #{?#{@pitwall_quota},#{@pitwall_quota} ,}#[default],}#[align=right]#{?pane_at_right, #{?#{@pitwall_system},#{@pitwall_system}#[fg=$SEP] · ,}#[fg=$TEXT]#{@pitwall_clock} #[default],},}"
+  # The right side gives way as the pane narrows: everything, then cpu, memory and disk, then the clock alone.
+  ROOM='#{e|-:#{pane_width},#{?pane_at_left,60,0}}'
+  FULL="#{?#{@pitwall_system},#{@pitwall_system}#[fg=$SEP] · ,}#[fg=$TEXT]#{@pitwall_clock} #[default]"
+  SHORT="#{?#{@pitwall_system_short},#{@pitwall_system_short}#[fg=$SEP] · ,}#[fg=$TEXT]#{=5:@pitwall_clock} #[default]"
+  CLOCK="#[fg=$TEXT]#{=5:@pitwall_clock} #[default]"
+  tmux set -g @pitwall-rule-fmt "#{?pane_at_bottom,#{?pane_at_left,#[fg=$MUTED] #{?#{@pitwall_quota},#{@pitwall_quota} ,}#[default],}#[align=right]#{?pane_at_right, #{?#{e|>=:$ROOM,92},$FULL,#{?#{e|>=:$ROOM,48},$SHORT,$CLOCK}},},}"
   # Remember what the theme had, once, to give it back if the layout is switched off.
   [ -n "$(tmux show -gqv @pitwall_prev_position)" ] || tmux set -g @pitwall_prev_position "$(tmux show -gv status-position)" \; set -g @pitwall_prev_border "$(tmux show -gwv pane-border-status)"
   tmux set -g 'status-format[0]' '#{E:@pitwall-tabs-fmt}' \; set -g status-position top \

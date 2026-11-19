@@ -241,9 +241,9 @@ $T run-shell "'$ROOT/pitwall.tmux'"; $T run-shell "'$ROOT/pitwall.tmux'"
 eq "tabs: the status line moves to the top" "$($T show -gv status-position)" top
 eq "tabs: its first line is pitwall's, set once" "$($T show -gv 'status-format[0]')" '#{E:@pitwall-tabs-fmt}'
 eq "tabs: the bottom bar is the panes' bottom border" "$($T show -gwv pane-border-status)" bottom
-$T set -p -t "$P1" @pitwall_state asking \; set -p -t "$P2" @pitwall_state done \; set -g @pitwall_quota 'Q-LIMITS' \; set -g @pitwall_clock 'C-CLOCK'
+$T set -p -t "$P1" @pitwall_state asking \; set -p -t "$P2" @pitwall_state done \; set -g @pitwall_quota 'Q-LIMITS' \; set -g @pitwall_clock '10:24 19 Nov'
 eq "tabs: another workspace is a pill with who waits there" "$($T display -p -t s:one '#{E:@pitwall-tabs-fmt}' | sed 's/#\[[^]]*\]//g' | grep -c 's ◆1 ✓1')" 1
-eq "tabs: the bottom rule carries the limits and the clock" "$($T display -p -t "$P2" '#{E:@pitwall-rule-fmt}' | sed 's/#\[[^]]*\]//g' | tr -s ' ')" " Q-LIMITS C-CLOCK "
+eq "tabs: the bottom rule carries the limits and the clock" "$($T display -p -t "$P2" '#{E:@pitwall-rule-fmt}' | sed 's/#\[[^]]*\]//g' | tr -s ' ')" " Q-LIMITS 10:24 "
 eq "the machine sampler reads at least the cpu" "$("$ROOT/bin/pitwall-sys" --once | grep -c '^cpu [0-9]*%')" 1
 $T set -g @pitwall-layout inline \; run-shell "'$ROOT/pitwall.tmux'"
 eq "switching back gives the theme its status line again" "$($T show -gv status-position) $($T show -gwv pane-border-status)" "bottom off"

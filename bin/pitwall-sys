@@ -18,10 +18,11 @@ v() {
 human() { awk -v b="$1" 'BEGIN { split("B K M G", u); i = 1; while (b >= 1024 && i < 4) { b /= 1024; i++ } printf (b < 10 && i > 1 ? "%.1f%s" : "%d%s"), b, u[i] }'; }
 
 sample() { # $1 plain: no tmux styles
-  mode=${1:-} out='' sep=''
+  mode=${1:-} out='' sep='' short='' ssep=''
   add() { out="$out$sep$1"; sep="#[fg=#4b5563] · "; }
+  keep() { short="$short$ssep$1"; ssep="#[fg=#4b5563] · "; } # the narrow variant: cpu, memory, disk
   cpu=$(ps -A -o %cpu= 2>/dev/null | awk -v n="$NCPU" '{ s += $1 } END { printf "%d", s / n }')
-  [ -n "$cpu" ] && add "$(v cpu "$cpu%" "$cpu" 90)"
+  [ -n "$cpu" ] && add "$(v cpu "$cpu%" "$cpu" 90)" && keep "$(v cpu "$cpu%" "$cpu" 90)"
   if [ "$OS" = Darwin ]; then
     gpu=$(ioreg -r -d 1 -w 0 -c IOAccelerator 2>/dev/null | sed -n 's/.*"Device Utilization %"=\([0-9]*\).*/\1/p' | head -1)
     [ -n "$gpu" ] && add "$(v gpu "$gpu%" "$gpu" 90)"
@@ -30,11 +31,11 @@ sample() { # $1 plain: no tmux styles
   elif [ -r /proc/meminfo ]; then
     mem=$(awk '/^MemTotal/ { t = $2 } /^MemAvailable/ { a = $2 } END { if (t) printf "%d", 100 - a * 100 / t }' /proc/meminfo)
   fi
-  [ -n "${mem:-}" ] && add "$(v mem "$mem%" "$mem" 90)"
+  [ -n "${mem:-}" ] && add "$(v mem "$mem%" "$mem" 90)" && keep "$(v mem "$mem%" "$mem" 90)"
   set -- $(df -kP / 2>/dev/null | awk 'NR == 2 { print $4, $2 }') # free, size (KiB)
   if [ -n "${2:-}" ]; then
     used=$(( (100 * ($2 - $1)) / $2 ))
-    add "$(v disk "$(human $(( $1 * 1024 ))) free" "$used" 90)"
+    d=$(v disk "$(human $(( $1 * 1024 ))) free" "$used" 90); add "$d"; keep "$d"
   fi
   # Network: bytes on the default interface since the last sample.
   if [ "$OS" = Darwin ]; then
@@ -68,12 +69,12 @@ trap 'tmux set -gu @pitwall_sys_pid 2>/dev/null' EXIT
 
 while tmux list-clients -F x 2>/dev/null | grep -q x && [ "$(tmux show -gqv @pitwall-layout)" = tabs ]; do
   INTERVAL=$(tmux show -gqv @pitwall-system-interval); INTERVAL=${INTERVAL:-5}
-  sys=''
+  sys='' sys_short=''
   # In this shell, not a $(subshell): the network rate needs the counters of the last sample.
-  [ "$(tmux show -gqv @pitwall-system)" = on ] && sample && sys=$out
+  [ "$(tmux show -gqv @pitwall-system)" = on ] && sample && sys=$out sys_short=$short
   clock=$(date '+%H:%M %d %b')
   # Setting an option redraws the pane borders, where the bottom rule lives: only when something changed.
-  [ "$sys" != "${last_sys:-}" ] || [ "$clock" != "${last_clock:-}" ] && tmux set -g @pitwall_system "$sys" \; set -g @pitwall_clock "$clock" 2>/dev/null
+  [ "$sys" != "${last_sys:-}" ] || [ "$clock" != "${last_clock:-}" ] && tmux set -g @pitwall_system "$sys" \; set -g @pitwall_system_short "$sys_short" \; set -g @pitwall_clock "$clock" 2>/dev/null
   last_sys=$sys last_clock=$clock
   sleep "$INTERVAL"
 done
