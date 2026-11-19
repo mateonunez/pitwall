@@ -208,6 +208,7 @@ sleep 0.3
 daemon() { echo "{\"session_id\":\"$1\",\"cwd\":\"$2\"}" | TMUX="$SOCK,0,0" TMUX_PANE=%999 CODEX_HOME="$FAKE/home" "$ROOT/bin/pitwall-hook" "$3" "$4"; }
 daemon cx-b "$FAKE/proj" PreToolUse codex
 eq "a daemon's stale pane: the Codex lane is found by its thread name" "$($T display -p -t "$CB" '#{@pitwall_state}')" working
+[ "$($T display -p -t "$CB" '#{@pitwall_state}')" = working ] || { echo "  FAKE=$FAKE ($(cd "$FAKE/proj" && pwd -P))"; $T list-panes -a -F '  #{pane_id} [#{pane_current_path}] [#{pane_current_command}] [#{pane_title}]'; }
 eq "and the other Codex in that directory is left alone" "$($T display -p -t "$CA" '#{@pitwall_state}')" ""
 daemon cx-b "$FAKE/proj" Stop codex
 eq "once found, its session leads back to it" "$($T display -p -t "$CB" '#{@pitwall_state}')" done
