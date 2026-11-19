@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/mateonunez/pitwall/compare/v0.1.2...v0.1.3) (2026-11-19)
+
+
+### Bug Fixes
+
+* lanes keep their signals when hooks run outside tmux or subagents work in the background ([2db23a3](https://github.com/mateonunez/pitwall/commit/2db23a399a1de993b131790dfec5354265c49fe6))
+
 ## [0.1.2](https://github.com/mateonunez/pitwall/compare/v0.1.1...v0.1.2) (2026-11-17)
 
 
