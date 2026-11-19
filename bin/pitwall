@@ -16,7 +16,7 @@ pitwall: see and steer coding agents from tmux
   pitwall peek @N [lines]   the last lines of a lane
   pitwall go @N             jump to a lane
   pitwall next              jump to the next lane that is asking or done (cycles)
-  pitwall board             the board (prefix A opens it in a popup)
+  pitwall dash              the dashboard (prefix Space opens it in a popup); board is the old name
   pitwall stats [@N]        model, context and tokens per lane, from the agents' transcripts
   pitwall quota [--refresh] Claude and Codex usage limits, from CodexBar
   pitwall saved             the lanes pitwall can bring back after tmux dies
@@ -31,7 +31,7 @@ pitwall: see and steer coding agents from tmux
   pitwall install [--write] show (or add) the hook lines for Claude Code and Codex
   pitwall doctor            what is missing; exits 1 when something is
   pitwall demo [stop]       a throwaway tmux server with fake lanes, to look at pitwall
-  pitwall keys              every key, in tmux and in the board
+  pitwall keys              every key, in tmux and in the dashboard
   pitwall --version         the installed version
 EOF
 }
@@ -118,7 +118,7 @@ cmd_stats() {
     { printf "%-22s %-8s %-7s %-22s %6s %9s %9s\n", $1, $2, $3, ($4 == "" ? "—" : $4), ($5 == "" ? "—" : $5 "%"), ($8 == "" ? "—" : $8), ($9 == "" ? "—" : $9) }'
 }
 
-# quota [--refresh]: CodexBar's usage limits, rendered once into @pitwall_quota for the status line and the board.
+# quota [--refresh]: CodexBar's usage limits, rendered once into @pitwall_quota for the status line and the dashboard.
 cmd_quota() {
   bar=$(tmux show -gqv @pitwall-codexbar 2>/dev/null)
   bar=${bar:-/Applications/CodexBar.app/Contents/Helpers/CodexBarCLI}
@@ -529,7 +529,8 @@ cmd_demo() {
     \; set -g pane-border-style 'fg=#262626' \; set -g pane-active-border-style 'fg=#f59e0b' \
     \; set -g allow-rename off \; set -g automatic-rename off \
     \; set -g @pitwall-layout tabs \; set -g @pitwall-system on \; set -g @pitwall-quota off \
-    \; set -g @pitwall_quota '#[fg=#6b7280]claude 5h #[fg=#9ca3af]12%#[fg=#6b7280] ↻3h · wk #[fg=#9ca3af]34%#[fg=#6b7280] ↻5d   codex wk #[fg=#9ca3af]41%#[fg=#6b7280] ↻2d' 
+    \; set -g @pitwall_quota '#[fg=#6b7280]claude 5h #[fg=#9ca3af]12%#[fg=#6b7280] ↻3h · wk #[fg=#9ca3af]34%#[fg=#6b7280] ↻5d   codex wk #[fg=#9ca3af]41%#[fg=#6b7280] ↻2d' \
+    \; set -g @pitwall_quota_plain 'claude 5h 12% ↻3h · wk 34% ↻5d   codex wk 41% ↻2d' 
   pane() { # target state harness age-in-seconds task
     $T set -p -t "$1" @pitwall_state "$2" \; set -p -t "$1" @pitwall_harness "$3" \
       \; set -p -t "$1" @pitwall_since "$(($(date +%s) - $4))" \; select-pane -t "$1" -T "$5"
@@ -563,7 +564,7 @@ cmd_demo() {
   $T run-shell -b "sleep 15; tmux set -p -t lab:ait.1 @pitwall_state done"
   $T run-shell -b "sleep 25; tmux rename-window -t lab:notes fastify-orama \; set -p -t lab:fastify-orama @pitwall_state working \; set -p -t lab:fastify-orama @pitwall_harness claude \; select-pane -t lab:fastify-orama -T 'Bump Orama to v3'; '$DIR/bin/pitwall-tick'"
   echo "attach:  tmux -L pitwall-demo attach -t lab"
-  echo "keys:    prefix A board · prefix a next lane that needs you"
+  echo "keys:    prefix Space dashboard · prefix a next lane that needs you"
   echo "stop:    pitwall demo stop"
 }
 
@@ -573,7 +574,7 @@ case ${1:-} in
   go) shift; cmd_go "$@" ;;
   seen) shift; cmd_seen "$@" ;;
   next) shift; cmd_next "${1:-}" ;;
-  board) exec "$DIR/bin/pitwall-board" ;;
+  dash | board) exec "$DIR/bin/pitwall-dash" ;;
   _lanes) lanes ;;
   stats) shift; cmd_stats "${1:-}" ;;
   quota) shift; cmd_quota "${1:-}" ;;
@@ -587,6 +588,7 @@ case ${1:-} in
   ws) shift; cmd_ws "$@" ;;
   move) shift; cmd_move "$@" ;;
   _move) shift; move_window "$@" ;;
+  _resume-cmd) shift; resume_cmd "$@" ;;
   _reindex) shift; cmd__reindex "$@" ;;
   ot) shift; cmd_ot "$@" ;;
   _escalate) shift; cmd__escalate "$@" ;;
@@ -597,18 +599,22 @@ case ${1:-} in
     k() { tmux show -gqv "@pitwall-key-$1" 2>/dev/null || true; }
     cat <<EOF
 In tmux (prefix, then)       also listed by tmux's own help, prefix ?
-  $(printf '%-4s' "$(k board | grep . || echo A)") the board
-  $(printf '%-4s' "$(k next | grep . || echo a)") next lane that needs you; again to cycle
-  $(printf '%-4s' "$(k workspaces | grep . || echo W)") workspaces: go to one, c new, r rename
-  $(printf '%-4s' "$(k restore | grep . || echo R)") restore the lanes a dead tmux took with it
+  $(printf '%-6s' "$(k dashboard | grep . || echo Space)") the dashboard: every lane, workspace and action
+  $(printf '%-6s' "$(k next | grep . || echo a)") next lane that needs you; again to cycle
+  $(printf '%-6s' "$(k restore | grep . || echo R)") restore the lanes a dead tmux took with it
 
-In the board                 ? shows these there too
-  n e  d D  1-9    down, up · first, last · a row shown
-  i ⏎              jump into the lane
-  /  //            filter as you type · search the lanes' output (on ⏎)
-  w  g  s          one workspace · view by state, workspace, or one row each · sort
-  v  V  m          select · select everything shown · move to a workspace
-  esc  h q         drop selection, then filter, then close · close
+In the dashboard             ? (with the search empty) shows these there too
+  type             find lanes, workspaces, actions and commands; //text searches the lanes' output
+  ctrl-n ctrl-e    down, up (the arrows too)
+  ⏎                go to the lane · switch to the workspace · open the story · run the action
+  1 2 3            answer the lane under the cursor when it asks (search empty)
+  space            read the lane's whole output (search empty)
+  ctrl + key       an action at once, even mid-search: ctrl-d diff · ctrl-o nvim · ctrl-g lazygit · ctrl-p PR
+                   ctrl-s write · ctrl-w move · ctrl-r rename · ctrl-v select · ctrl-t worktree · ctrl-y copy resume · ctrl-x close
+  shift-tab  →     every action on what is under the cursor, one key each (D branch diff · M move and go · a new lane
+                   · i interrupt · R restart, and the ones above)
+  tab              the other view: Lanes, OpenTimeline
+  esc  ←           back: the actions, then the search, then the selection, then close (ctrl-c closes)
 EOF
     ;;
   -v | --version | version) cat "$DIR/version.txt" ;;

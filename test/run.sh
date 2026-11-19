@@ -28,7 +28,7 @@ hook() { echo "${3:-{\}}" | TMUX="$SOCK,0,0" TMUX_PANE="$1" "$ROOT/bin/pitwall-h
 state() { $T display -p -t "$1" '#{E:@pitwall-state-fmt}'; }
 
 eq "loaded once into window-status-format" "$($T show -gv window-status-format | grep -o '@pitwall-glyph' | wc -l | tr -d ' ')" 1
-eq "tmux's help (prefix ?) lists pitwall's keys" "$($T list-keys -N | grep -c 'pitwall:')" 4
+eq "tmux's help (prefix ?) lists pitwall's keys: the dashboard, the jump, restore" "$($T list-keys -N | grep -c 'pitwall:')" 3
 eq "loaded once into status-right" "$($T show -gv status-right | grep -o '@pitwall-summary' | wc -l | tr -d ' ')" 1
 
 hook "$P2" SessionStart;      eq "SessionStart → idle" "$(state s:two)" idle
@@ -274,19 +274,24 @@ eq "a second install adds nothing" "$(grep -c '^hooks:' "$H/.hermes/config.yaml"
 printf 'hooks:\n  pre_tool_call: []\n' >"$H/.hermes/config.yaml"
 eq "a config with its own hooks: block is left alone, the lines printed" "$(HOME=$H HERMES_HOME= "$ROOT/bin/pitwall" install --write | grep -c 'add these under it')$(grep -c pitwall "$H/.hermes/config.yaml")" 10
 
-# --- the board, driven like a person would: keys in, screen out -------------------------------------------------
-# Its own server with four known lanes (alpha, beta, gamma in lab; delta in oss), the board in a pane of its own.
-B="tmux -L pitwall-board-$$"
+# --- the dashboard, driven like a person would: keys in, screen out ---------------------------------------------
+# Its own server with four known lanes (alpha, beta, gamma in lab; delta in oss), the dashboard in a pane of its own.
+B="tmux -L pitwall-dash-$$"
 trap '$T kill-server 2>/dev/null; $B kill-server 2>/dev/null; rm -rf $ISOLATED' EXIT
 $B -f /dev/null new-session -d -s lab -n alpha -x 150 -y 45
+$B set -g allow-set-title off 2>/dev/null # the tasks stay the test's (tmux 3.4 has no such option, nor a shell that sets titles)
 $B new-window -d -t lab -n beta \; new-window -d -t lab -n gamma \; new-session -d -s oss -n delta
 $B set-environment -g XDG_CONFIG_HOME "$XDG_CONFIG_HOME" \; set-environment -g XDG_STATE_HOME "$XDG_STATE_HOME"
 $B run-shell "'$ROOT/pitwall.tmux'"
+eq "the dashboard is on prefix Space, the board and the workspace picker are gone" "$($B list-keys -T prefix | grep pitwall-dash | grep -c ' Space ') $($B list-keys -T prefix | grep -c 'pitwall-board\|pitwall-ws')" "1 0"
+$B bind A display-popup "'/old/bin/pitwall-board'" \; bind W display-popup "'/old/bin/pitwall-ws'" \; bind B display-popup mine
+$B run-shell "'$ROOT/pitwall.tmux'"
+eq "an upgrade frees the keys the board and the picker had, and only those" "$($B list-keys -T prefix | grep -c 'pitwall-board\|pitwall-ws') $($B list-keys -T prefix | grep -c 'display-popup mine')" "0 1"
 lane() { $B set -p -t "$1" @pitwall_state "$2" \; set -p -t "$1" @pitwall_harness codex \; select-pane -t "$1" -T "task of ${1#*:}"; }
 lane lab:alpha asking; lane lab:beta idle; lane lab:gamma working; lane oss:delta idle
-BASH_BIN=bash # the board runs on the bash pitwall.tmux would pick
+BASH_BIN=bash # the dashboard runs on the bash pitwall.tmux would pick
 for b in /opt/homebrew/bin/bash /usr/local/bin/bash; do [ -x "$b" ] && BASH_BIN=$b && break; done
-$B new-session -d -s ui -x 150 -y 45 "env TERM=xterm-256color '$BASH_BIN' '$ROOT/bin/pitwall-board'"
+$B new-session -d -s ui -x 150 -y 45 "env TERM=xterm-256color '$BASH_BIN' '$ROOT/bin/pitwall-dash'"
 screen() { $B capture-pane -p -t ui; }
 until_screen() { # until_screen <grep pattern> [absent]: wait up to 4 s for the screen to show (or lose) it
   i=0
@@ -294,54 +299,86 @@ until_screen() { # until_screen <grep pattern> [absent]: wait up to 4 s for the 
     if [ "${2:-}" = absent ]; then screen | grep -q -- "$1" || return 0; else screen | grep -q -- "$1" && return 0; fi
     sleep 0.1; i=$((i + 1))
   done
-  echo "FAIL  the board never showed${2:+ the absence of} '$1'"; fail=1 # a timeout is a failure, not a skipped check
+  echo "FAIL  the dashboard never showed${2:+ the absence of} '$1'"; fail=1 # a timeout is a failure, not a skipped check
   return 1
 }
 keys() { $B send-keys -t ui "$@"; sleep 0.3; }
 esc() { $B send-keys -t ui Escape; sleep 1.2; } # on bash 3.2 a lone esc waits a second to rule out an arrow
 row() { screen | grep -E "[○◆✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] $1 "; }
+lanes_shown() { screen | grep -cE '[○◆✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (alpha|beta|gamma|gam2|delta) '; }
 
-until_screen delta && eq "the board lists every lane" "$(screen | grep -cE '[○◆✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (alpha|beta|gamma|delta) ')" 4
-keys -l /; keys -l del
-until_screen alpha absent && eq "/ filters as you type" "$(screen | grep -cE '[○◆✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (alpha|delta) ')" 1
+until_screen delta && eq "the dashboard lists every lane" "$(lanes_shown)" 4
+eq "with the search empty, who waits for you comes first" "$(screen | grep -A1 'WAITING FOR YOU' | grep -c '◆ alpha')" 1
+keys -l del
+until_screen alpha absent && eq "typing finds lanes" "$(lanes_shown) $(screen | grep -c 'ACTIONS ON DELTA')" "1 1"
+keys -l xyz; $B send-keys -t ui BSpace BSpace BSpace; sleep 0.8
+eq "a burst of backspaces lands, every one" "$(screen | grep -c '❯ del▏')" 1
 esc
-until_screen alpha && eq "esc clears the filter" "$(screen | grep -cE '[○◆✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (alpha|beta|gamma|delta) ')" 4
+until_screen alpha && eq "esc empties the search" "$(lanes_shown)" 4
+eq "a lane's task shows under it" "$(screen | grep -A1 '◆ alpha' | grep -c 'task of alpha')" 1
+keys -l alpha; keys BTab
+until_screen 'ACTIONS ON ALPHA' && esc
+eq "back from its actions, the cursor is still on the lane" "$(screen | grep '▌' | grep -c alpha)" 1
+keys -l 1
+until_screen 'answered 1 to alpha' && eq "1 answers the lane that asks, typed into its pane" "$($B capture-pane -p -t lab:alpha | grep -c '1$')" 1
+$B send-keys -t lab:alpha C-u
+keys C-n
+eq "down skips the task line, to the next lane" "$(screen | grep '▌' | grep -cE '[○◆✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] ')" 1
+keys Tab
+until_screen 'OPENTIMELINE IS NOT ANSWERING' && eq "shift-tab opens OpenTimeline, which says when its server does not answer, and what to do" "$(screen | grep -c 'Try again\|Open the OpenTimeline repo')" 2
+keys Tab
+until_screen 'WAITING FOR YOU' && eq "and shift-tab comes back to the lanes" "$(lanes_shown)" 4
 
-eq "the cursor stays on its lane when the filter goes" "$(row delta | grep -c '▌')" 1
-keys -l d; keys -l v # first row: the most urgent lane, alpha, asking
-eq "v selects the lane under the cursor" "$(row alpha | grep -c '●')" 1
-lane lab:alpha idle # alpha drops below gamma: rows re-sort under the selection
+keys -l alpha; keys BTab
+until_screen 'ACTIONS ON ALPHA' && keys -l v
+eq "tab, then v, selects the lane" "$(row alpha | grep -c '●')" 1
+lane lab:alpha idle # alpha leaves "who waits for you" for lab's lanes: rows re-sort under the selection
 sleep 1.6
 eq "the selection follows the lane when rows re-sort" "$(row alpha | grep -c '●') $(row gamma | grep -c '●')" "1 0"
-keys -l /; keys -l del; keys Enter
-until_screen 'hidden by the filter' && eq "selected lanes the filter hides are counted" "$(screen | grep -c '1 hidden by the filter')" 1
+keys -l del
+until_screen 'not shown' && eq "selected lanes the search hides are counted" "$(screen | grep -c '1 not shown')" 1
 esc
-eq "esc clears the selection first" "$(screen | grep -c 'selected') $(screen | grep -cE '[○◆✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (alpha|delta) ')" "0 1"
+eq "esc empties the search first, the selection stays" "$(screen | grep -c '1 selected')" 1
 esc
-until_screen alpha && eq "then the filter" "$(screen | grep -cE '[○◆✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (alpha|beta|gamma|delta) ')" 4
-eq "and the filter line is gone, not just its rows" "$(screen | grep -cE '^ +/ ')" 0
+eq "then the selection" "$(screen | grep -c 'selected')" 0
 
-keys -l /; keys -l lab; keys Enter; keys -l V
-eq "V selects everything shown" "$(screen | grep -c '3 selected')" 1
-keys -l m; keys -l c; keys -l parked; keys Enter
-sleep 0.8
-eq "m moves exactly the selection" "$($B list-windows -t '=parked' -F '#W' | sort | tr '\n' ' ')" "alpha beta gamma "
-eq "and leaves the rest where it was" "$($B list-windows -t '=oss' -F '#W' | tr '\n' ' ')" "delta "
-eq "and the selection is cleared" "$(screen | grep -c 'selected')" 0
-esc; keys -l g; keys -l g
-until_screen WORKSPACES && eq "g g shows one row per workspace" "$(screen | grep -cE '^ *▌? *(oss|parked) +[0-9]+ lane')" 2
-n=0; while ! screen | grep -q '▌ *oss ' && [ $n -lt 4 ]; do keys -l n; n=$((n + 1)); done
-keys -l v
-eq "v in the workspaces view selects that workspace's lanes" "$(screen | grep -c 'move 1 lane ')" 1
+keys -l alpha; keys BTab; keys -l v; keys -l beta; keys C-v
+until_screen '● ○ beta' && eq "ctrl-v selects the lane mid-search, and the search stays" "$(screen | grep -c '❯ beta') $(row beta | grep -c '●')" "1 1"
 esc
-keys Enter
-until_screen "view state" && eq "⏎ opens a workspace, filter cleared: only its lanes" "$(screen | grep -cE '[○◆✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (alpha|beta|gamma|delta) ')" 1
-# Opened from a lane, the board starts on it, not on the top row.
-G=$($B display -p -t lab:gamma '#{pane_id}')
-$B new-session -d -s ui2 -x 150 -y 45 "env TERM=xterm-256color PITWALL_FROM=$G '$BASH_BIN' '$ROOT/bin/pitwall-board'"
-i=0; until $B capture-pane -p -t ui2 | grep -q 'gamma' || [ $i -ge 40 ]; do sleep 0.1; i=$((i + 1)); done; sleep 0.3
-eq "opened from a lane, the board starts on it" "$($B capture-pane -p -t ui2 | grep '▌' | grep -c gamma)" 1
-eq "opened from anywhere else, on the top row as before" "$(screen | grep '▌' | grep -c 'alpha\|delta\|beta\|gamma')" 1
+keys -l gamma; keys BTab; keys -l m
+until_screen 'MOVE 2 LANES TO' && keys -l parked && keys Enter
+sleep 0.8
+eq "move takes exactly the selection" "$($B list-windows -t '=parked' -F '#W' | sort | tr '\n' ' ')" "alpha beta "
+eq "and leaves the rest where it was" "$($B list-windows -t '=lab' -F '#W' | tr '\n' ' ')" "gamma "
+eq "and clears the selection" "$(screen | grep -c 'selected')" 0
+
+keys -l gamma; keys C-r # ctrl+letter acts mid-search
+$B send-keys -t ui BSpace BSpace BSpace; sleep 0.6; keys -l m2; keys Enter
+eq "r renames the tab" "$($B list-windows -t '=lab' -F '#W')" gam2
+keys -l parked; n=0; while ! screen | grep -q '▌.*▣ parked' && [ $n -lt 6 ]; do keys C-n; n=$((n + 1)); done; keys BTab
+until_screen 'ACTIONS ON PARKED' && keys -l r
+$B send-keys -t ui BSpace BSpace BSpace BSpace BSpace BSpace; sleep 0.6; keys -l later; keys Enter
+eq "r on a workspace renames it" "$($B has-session -t '=later' 2>/dev/null && echo later)" later
+keys -l undo
+until_screen 'Undo the last move (2 tabs back)' && keys Enter
+sleep 0.8
+eq "u puts the tabs of the last move back" "$($B list-windows -t '=lab' -F '#W' | sort | tr '\n' ' ')" "alpha beta gam2 "
+D=$($B display -p -t oss:delta '#{pane_id}')
+keys -l delta; keys BTab; keys -l x
+until_screen 'close DELTA' && keys -l y
+sleep 0.5
+eq "x closes the lane, once you say y" "$($B display -p -t "$D" '#{pane_id}' 2>/dev/null | grep -c .)" 0
+
+# Opened from a lane, the dashboard starts on it; M moves it and takes you along, closing the dashboard.
+G=$($B display -p -t lab:gam2 '#{pane_id}')
+$B new-session -d -s ui2 -x 150 -y 45 "env TERM=xterm-256color PITWALL_FROM=$G '$BASH_BIN' '$ROOT/bin/pitwall-dash'"
+i=0; until $B capture-pane -p -t ui2 | grep -q 'gam2' || [ $i -ge 40 ]; do sleep 0.1; i=$((i + 1)); done; sleep 0.3
+eq "opened from a lane, the dashboard starts on it" "$($B capture-pane -p -t ui2 | grep '▌' | grep -c gam2)" 1
+$B send-keys -t ui2 BTab; sleep 0.4; $B send-keys -t ui2 M; sleep 0.5; $B send-keys -t ui2 -l followed; sleep 0.3; $B send-keys -t ui2 Enter
+i=0; while $B has-session -t '=ui2' 2>/dev/null && [ $i -lt 40 ]; do sleep 0.1; i=$((i + 1)); done
+eq "M moves the lane and closes the dashboard" "$($B display -p -t "$G" '#{session_name}') $($B has-session -t '=ui2' 2>/dev/null && echo open || echo closed)" "followed closed"
+esc
+eq "esc with nothing left to undo closes the dashboard" "$($B has-session -t '=ui' 2>/dev/null && echo open || echo closed)" closed
 $B kill-server
 
 exit $fail

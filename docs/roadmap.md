@@ -15,8 +15,10 @@ Where pitwall goes next, and the rules it keeps on the way.
 - **Restore.** The hook keeps one record per agent session; after tmux dies, `prefix R` or `pitwall restore` rebuilds sessions, windows and panes and resumes each agent.
 - **Lanes as worktrees.** `pitwall new` and `pitwall done`, on [gwm](https://github.com/kbrdn1/gwm) and [lumen](https://github.com/jnsahaj/lumen).
 - **Needs you, beyond the terminal.** `lane.state` signals to [OpenTimeline](https://github.com/mateonunez/opentimeline) through a system seat, with the lane's metrics; the credential renews itself.
-- **The board as a manager.** Filter (`/`), output search (`//`), workspace scope (`w`), views by state, by workspace or one row per workspace (`g`), sort (`s`), help (`?`), and a selection with tested rules (`v`, `V`, `m`).
-- **Workspaces.** tmux sessions as workspaces: `prefix W`, `m` in the board, `pitwall move`, other workspaces that need you in the status line.
+- **The dashboard** (`prefix Space`): one palette for lanes, workspaces, actions and commands, replacing the board, the workspace picker and the menu. Move, move and go, rename tabs and workspaces, select, new lane or gwm worktree, diff in lumen, close.
+- **The dashboard, second round.** Answer an asking lane with `1` `2` `3`; each lane's task under it; branch, changes and a context bar in the preview; read the whole output, write to the agent, the worktree's or the branch's diff, nvim, lazygit, the PR, interrupt, restart, copy the resume command, undo a move, the most used on `ctrl` keys that work mid-search. An OpenTimeline view (`tab`): stories by project, linked to their lanes, and a way out when the server is down.
+- **The board as a manager** (now inside the dashboard). Filter (`/`), output search (`//`), workspace scope (`w`), views by state, by workspace or one row per workspace (`g`), sort (`s`), help (`?`), and a selection with tested rules (`v`, `V`, `m`).
+- **Workspaces.** tmux sessions as workspaces, managed from the dashboard, `pitwall move`, other workspaces that need you in the status line.
 - **Urgent after a while, and the bell.** A lane asking for ten minutes turns red and is sent as `urgent`; Needs you's count can sit in the status line.
 - **Tabs.** `@pitwall-layout tabs`: workspaces as Chrome-style tab groups on top, the usage limits and the machine (cpu, gpu, memory, disk, network, battery) on the panes' bottom rule.
 - **Signals that reach their lane.** Hooks run outside tmux (Codex's shared daemon, some Claude sessions) find their pane by session, directory or Codex thread name; a lane whose subagents still work in the background stays working.
@@ -26,12 +28,14 @@ Where pitwall goes next, and the rules it keeps on the way.
 
 | Step | Ships | Done when |
 | --- | --- | --- |
-| **Manage a lane from the board** | `r` rename, `x` close (asks first), `space` full preview with scrollback, `o` diff, `y` copy the resume command, `a` a new lane here, `u` undo the last move; each with its `pitwall` command | Most of a lane's life happens without leaving the board |
+| **Workspace recipes** | `pitwall up <name>` raises a workspace (tabs, agents, nvim) from a small file | A morning starts with one command |
+| **Lanes in nvim** | A picker fed by `pitwall ls --json`; open nvim in a lane's worktree | Editing and agents meet without leaving nvim |
 | **Group actions, past moving** | Close or rename a selection, with the same rules: counted, named, cleared | Tidying ten lanes takes one selection |
 | **Workspaces, fuller** | A working directory and a note per workspace; close from the picker | A workspace is a place, not just a name |
-| **Saved lanes in the board** | Closed and restorable lanes in their own section; restore or forget one | Coming back after a crash is a list, not a command |
+| **Saved lanes, one by one** | Closed and restorable lanes in their own section; restore or forget one | Coming back after a crash is a list, not a command |
 | **Metrics over time** | A small per-session ledger (turns, tokens, time asking versus working) so `pitwall stats --today` answers where the day went | You see which lanes cost the most and which waited on you the longest |
-| **Why a lane asks** | The reason a lane is asking shows on its row and its tab | You answer from the board without opening the lane |
+| **Why a lane asks** | The question itself on the lane's row and its tab, not only its task | You know what it asks before you look |
+| **Usage view** | A third view: usage limits with bars and the week's pace, tokens per lane today, the machine's numbers over time | You see where the quota goes |
 | **A skill for agents** | `skills/pitwall/SKILL.md`, so an orchestrator learns `pitwall ls`, refs and `peek` | An agent reads the fleet and asks before acting |
 
 ## Open questions
@@ -39,5 +43,4 @@ Where pitwall goes next, and the rules it keeps on the way.
 - OpenTimeline scopes only agent credentials, so the bell reads Needs you with a person's full token. A `read` scope for people's tokens would let it hold far less.
 
 - Should a lane that has been `asking` for a long time escalate in tmux too, for example with a bell?
-- How far should the board go: filter by typing, or stay a list you move through?
 - Would a TypeScript CLI earn its keep once `new`, `done` and `restore` arrive, with the hot path staying in `sh`?
