@@ -55,7 +55,8 @@ sample() { # $1 plain: no tmux styles
     bat=$(cat /sys/class/power_supply/BAT*/capacity 2>/dev/null | head -1)
   fi
   [ -n "$bat" ] && add "$(v ⚡ "$bat%" $((100 - bat)) 85)"
-  if [ "$mode" = plain ]; then printf '%s\n' "$out" | sed 's/#\[[^]]*\]//g'; else printf '%s' "$out"; fi
+  [ "$mode" = plain ] && printf '%s\n' "$out" | sed 's/#\[[^]]*\]//g'
+  return 0
 }
 
 if [ "${1:-}" = --once ]; then sample plain; exit 0; fi
@@ -68,7 +69,8 @@ trap 'tmux set -gu @pitwall_sys_pid 2>/dev/null' EXIT
 while tmux list-clients -F x 2>/dev/null | grep -q x && [ "$(tmux show -gqv @pitwall-layout)" = tabs ]; do
   INTERVAL=$(tmux show -gqv @pitwall-system-interval); INTERVAL=${INTERVAL:-5}
   sys=''
-  [ "$(tmux show -gqv @pitwall-system)" = on ] && sys=$(sample)
+  # In this shell, not a $(subshell): the network rate needs the counters of the last sample.
+  [ "$(tmux show -gqv @pitwall-system)" = on ] && sample && sys=$out
   clock=$(date '+%H:%M %d %b')
   # Setting an option redraws the pane borders, where the bottom rule lives: only when something changed.
   [ "$sys" != "${last_sys:-}" ] || [ "$clock" != "${last_clock:-}" ] && tmux set -g @pitwall_system "$sys" \; set -g @pitwall_clock "$clock" 2>/dev/null
