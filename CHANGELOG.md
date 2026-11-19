@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.7](https://github.com/mateonunez/pitwall/compare/v0.1.6...v0.1.7) (2026-11-19)
+
+
+### Bug Fixes
+
+* the demo runs the tabs layout and shows its lanes without the commands that draw them ([3e08b14](https://github.com/mateonunez/pitwall/commit/3e08b1417a333efe87d6f163814f82ce18d0b978))
+
 ## [0.1.6](https://github.com/mateonunez/pitwall/compare/v0.1.5...v0.1.6) (2026-11-19)
 
 
