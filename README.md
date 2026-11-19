@@ -44,7 +44,7 @@ Restart your agents so they pick up the hooks; Codex asks you to trust each new 
 
 ## What you get
 
-- **A status line that says who needs you.** `◆` amber: the agent is asking you something. `✓` green: it finished while you were elsewhere, and stays until you visit. A spinner while it works, `○` when it rests, `✗` when it has gone. I slip the glyph in front of the window name inside the format your theme already has, so your theme stays yours.
+- **A status line that says who needs you.** `◆` amber: the agent is asking you something. `✓` green: it finished while you were elsewhere, and stays until you visit. A spinner while it works, subagents it left running in the background included, `○` when it rests, `✗` when it has gone. I slip the glyph in front of the window name inside the format your theme already has, so your theme stays yours.
 - **Instant, and quiet when nothing moves.** A change redraws every status line at once and shows a short toast to anyone not already looking at that lane. The spinner turns only while something works, then the ticker exits.
 - **The board, a manager for your lanes.** `prefix A` lists every lane with a live preview of the one under the cursor, and lets you find and handle them from the keyboard: filter as you type (`/`), search what the lanes printed (`//`), look at one workspace (`w`), group by state or workspace, or see one row per workspace when there are fifty of them (`g`), select (`v`, `V`) and move what you selected (`m`). Keys are Colemak and vim, listed below and behind `?`.
 - **The jump.** `prefix a` takes you to the next lane that is asking or done. Press it again to cycle.
@@ -150,7 +150,7 @@ flowchart LR
   visit(["you visit a lane"]) -- "tmux hook" --> tmux
 ```
 
-The hook runs on every tool call next to whatever else you have hooked, so it stays in `sh` and makes two tmux calls when nothing changed. It writes the restore record (`~/.local/state/pitwall/lanes/<session>`) only when a session starts and once per turn. Rendering is tmux format strings reading window options: no process per redraw. Without hooks I still read a working Codex from the spinner in its pane title. The domain words are in [CONTEXT.md](CONTEXT.md).
+The hook runs on every tool call next to whatever else you have hooked, so it stays in `sh` and makes two tmux calls when nothing changed. It writes the restore record (`~/.local/state/pitwall/lanes/<session>`) only when a session starts and once per turn. Rendering is tmux format strings reading window options: no process per redraw. Without hooks I still read a working Codex from the spinner in its pane title. When an agent runs its hooks outside tmux, as Codex does from its shared daemon, I find the lane by its session, then by its directory, and for two Codex in one directory by the thread name in their titles; when that stays ambiguous I change nothing rather than the wrong lane. The domain words are in [CONTEXT.md](CONTEXT.md).
 
 ## What's next
 

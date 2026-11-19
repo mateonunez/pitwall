@@ -4,7 +4,7 @@ The words pitwall uses, and only those.
 
 - **Lane**: one tmux pane that runs one agent, usually in one worktree. A window can hold several lanes; it shows the most urgent one. A lane is named after its window, plus `.N` when the window has more than one pane.
 - **State**: what a lane is doing now. Exactly one of:
-  - `working`: the agent is thinking or running a tool.
+  - `working`: the agent is thinking or running a tool, or a subagent it started in the background still is (a background shell does not count).
   - `asking`: the agent waits for you (permission, a question, a choice).
   - `done`: the agent finished a turn while you were in another window. It stays `done` until you visit the lane: the unread mark.
   - `idle`: finished and already seen, or never started.

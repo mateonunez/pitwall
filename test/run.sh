@@ -40,7 +40,12 @@ sleep 1.6
 eq "ticker stops once nothing works" "$($T display -p '#{?#{@pitwall_tick_pid},running,stopped}')" stopped
 hook "$P2" Notification '{"notification_type":"idle_prompt"}'; eq "idle Notification keeps state" "$(state s:two)" asking
 hook "$P2" PostToolUse;       eq "PostToolUse → working" "$(state s:two)" working
-hook "$P2" Stop;              eq "Stop away from the lane → done" "$(state s:two)" done
+hook "$P2" Stop '{"background_tasks":[{"id":"a1","type":"subagent","status":"running","description":"a } ] in it"},{"id":"b1","type":"shell","status":"running"}]}'
+eq "Stop with a subagent still running → still working" "$(state s:two)" working
+hook "$P2" Stop '{"background_tasks":[{"id":"b1","type":"shell","status":"running","command":"pnpm dev"}]}'
+eq "a background shell alone does not keep it working" "$(state s:two)" done
+hook "$P2" PostToolUse
+hook "$P2" Stop '{"background_tasks":[]}'; eq "Stop away from the lane → done" "$(state s:two)" done
 eq "harness recorded" "$($T display -p -t s:two '#{@pitwall_harness}')" codex
 
 out=$(TMUX="$SOCK,0,0" "$ROOT/bin/pitwall" ls | head -1)
@@ -184,6 +189,34 @@ pw ws rename lab oss >/dev/null
 eq "renaming a workspace keeps its records in step" "$(cut -f4 "$XDG_STATE_HOME/pitwall/lanes/s-move")" oss
 pw move "oss:two" s >/dev/null
 eq "and the lane can come back" "$($T display -p -t "$P2" '#{session_name}')" s
+echo '{"session_id":"s-move"}' | TMUX="$SOCK,0,0" TMUX_PANE='' "$ROOT/bin/pitwall-hook" PreToolUse claude
+eq "a hook without TMUX_PANE finds its pane by the session it holds" "$(state s:two)" working
+echo '{"session_id":"nobody"}' | TMUX="$SOCK,0,0" TMUX_PANE='' "$ROOT/bin/pitwall-hook" Stop claude
+eq "and one whose session no pane holds changes nothing" "$(state s:two)" working
+
+# Codex runs hooks in a shared daemon whose TMUX_PANE names a pane long gone (tmux 3.7 then prints empty fields
+# and exits 0). Two Codex in one directory are told apart by the thread name in their title; a lone Claude by
+# its directory. Fake agents: copies of sleep named like the real processes.
+FAKE=$(mktemp -d); ISOLATED="$ISOLATED $FAKE"
+for a in codex 2.1.327; do cp /bin/sleep "$FAKE/$a"; command -v codesign >/dev/null && codesign -f -s - "$FAKE/$a" 2>/dev/null; done; mkdir -p "$FAKE/proj" "$FAKE/home"
+printf '{"id":"cx-b","thread_name":"Fix the board"}\n' >"$FAKE/home/session_index.jsonl"
+CA=$($T new-window -d -P -F '#{pane_id}' -t s: -n cxa -c "$FAKE/proj" "$FAKE/codex 300")
+CB=$($T new-window -d -P -F '#{pane_id}' -t s: -n cxb -c "$FAKE/proj" "$FAKE/codex 300")
+CL=$($T new-window -d -P -F '#{pane_id}' -t s: -n cl -c "$FAKE" "$FAKE/2.1.327 300")
+$T select-pane -t "$CA" -T 'Ship the docs | proj' \; select-pane -t "$CB" -T 'Fix the board | proj'
+sleep 0.3
+daemon() { echo "{\"session_id\":\"$1\",\"cwd\":\"$2\"}" | TMUX="$SOCK,0,0" TMUX_PANE=%999 CODEX_HOME="$FAKE/home" "$ROOT/bin/pitwall-hook" "$3" "$4"; }
+daemon cx-b "$FAKE/proj" PreToolUse codex
+eq "a daemon's stale pane: the Codex lane is found by its thread name" "$($T display -p -t "$CB" '#{@pitwall_state}')" working
+eq "and the other Codex in that directory is left alone" "$($T display -p -t "$CA" '#{@pitwall_state}')" ""
+daemon cx-b "$FAKE/proj" Stop codex
+eq "once found, its session leads back to it" "$($T display -p -t "$CB" '#{@pitwall_state}')" done
+eq "and the record is right, not empty fields" "$(cut -f4,6 "$XDG_STATE_HOME/pitwall/lanes/cx-b")" "s	cxb"
+daemon cx-z "$FAKE/proj" PreToolUse codex
+eq "two Codex and no thread name to tell them apart: neither is touched" "$($T display -p -t "$CA" '#{@pitwall_state}')" ""
+echo "{\"session_id\":\"cl-1\",\"cwd\":\"$FAKE\"}" | TMUX="$SOCK,0,0" TMUX_PANE='' "$ROOT/bin/pitwall-hook" UserPromptSubmit claude
+eq "a Claude hook without tmux finds the one Claude in its directory" "$($T display -p -t "$CL" '#{@pitwall_state} #{@pitwall_name}')" "working $(basename "$FAKE")"
+$T kill-pane -t "$CA" \; kill-pane -t "$CB" \; kill-pane -t "$CL"
 
 # A window moving out leaves no gap (tmux renumbers only on close), even when moved by hand; records follow.
 $T set -g renumber-windows on \; new-session -d -s r -n ra \; new-window -d -t r:1 -n rb \; new-window -d -t r:2 -n rc
