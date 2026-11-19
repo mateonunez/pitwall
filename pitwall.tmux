@@ -62,19 +62,21 @@ case $r in *@pitwall-summary*) ;; *) tmux set -g status-right "#{E:@pitwall-summ
 # Formats live in options; status-format[0] and pane-border-format only point at them, so switching back can
 # tell what pitwall set and undo exactly that.
 if [ "$(opt @pitwall-layout inline)" = tabs ]; then
-  STRIP=$(opt @pitwall-color-strip '#141414') TABBG=$(opt @pitwall-color-tab '#0a0a0a') PILL=$(opt @pitwall-color-pill '#262626')
-  MUTED='#9ca3af' DIM='#6b7280' TEXT='#e5e7eb' DARK='#0a0a0a' SEP='#4b5563'
+  STRIP=$(opt @pitwall-color-strip '#111111') TABBG=$(opt @pitwall-color-tab '#2a2a2a') PILL=$(opt @pitwall-color-pill '#1f1f1f')
+  MUTED='#9ca3af' DIM='#6b7280' TEXT='#f3f4f6' DARK='#0a0a0a' SEP='#4b5563'
   if [ "$(opt @pitwall-tab-caps on)" = on ]; then L='' R=''; else L=' ' R=' '; fi # Nerd Font half circles
   count() { printf '%s' "#{n:#{W:#{P:#{?#{==:$S,$1},x,}}}}"; }
   A=$(count asking) D=$(count done)
   # Room per tab: what the pills leave, shared by the windows, between 6 and 24 cells.
-  X='#{e|-:#{e|/:#{e|-:#{client_width},#{e|*:#{server_sessions},13}},#{session_windows}},5}'
+  X='#{e|-:#{e|/:#{e|-:#{client_width},#{e|*:#{server_sessions},13}},#{session_windows}},7}'
   tmux set -g @pitwall-tab-width "#{?#{e|<:$X,6},6,#{?#{e|>:$X,24},24,$X}}"
   NAME='#{=/#{E:@pitwall-tab-width}/…:window_name}'
-  TAB_OFF="#[range=window|#{window_index}]#[fg=$DIM bg=$STRIP] #{E:@pitwall-glyph}#[fg=$MUTED nobold]$NAME #[norange] "
-  TAB_ON="#[range=window|#{window_index}]#[fg=$TABBG bg=$STRIP]$L#[fg=$DIM bg=$TABBG]#{E:@pitwall-glyph}#[fg=$TEXT bold]$NAME#[fg=$TABBG bg=$STRIP nobold]$R#[norange] "
-  HERE="#[range=session|#{session_id}]#[fg=$ASK bg=$STRIP]$L#[fg=$DARK bg=$ASK bold]#{session_name}#[fg=$ASK bg=$STRIP nobold]$R#[norange] #{W:$TAB_OFF,$TAB_ON}"
-  AWAY="#[range=session|#{session_id}]#[fg=$PILL bg=$STRIP]$L#[fg=$MUTED bg=$PILL]#{session_name}#{?$A, #[fg=$ASK bold]◆$A#[nobold],}#{?$D, #[fg=$DONE bold]✓$D#[nobold],}#[fg=$PILL bg=$STRIP]$R#[norange] "
+  # The open workspace's tabs share an amber underline, as a Chrome tab group shares its colour; the current tab is
+  # lifted off the strip, with its number in amber. Numbers are there for prefix 1-9.
+  TAB_OFF="#[range=window|#{window_index}]#[fg=$DIM bg=$STRIP underscore us=$ASK] #{window_index} #{E:@pitwall-glyph}#[fg=$MUTED nobold]$NAME #[norange]"
+  TAB_ON="#[range=window|#{window_index}]#[fg=$TABBG bg=$STRIP nounderscore]$L#[fg=$ASK bg=$TABBG bold underscore us=$ASK]#{window_index} #[fg=$DIM nobold]#{E:@pitwall-glyph}#[fg=$TEXT bold]$NAME#[fg=$TABBG bg=$STRIP nobold nounderscore]$R#[norange]"
+  HERE="#[range=session|#{session_id}]#[fg=$ASK bg=$STRIP]$L#[fg=$DARK bg=$ASK bold]#{session_name}#[fg=$ASK bg=$STRIP nobold]$R#[norange]#{W:$TAB_OFF,$TAB_ON}#[nounderscore bg=$STRIP]   "
+  AWAY="#[range=session|#{session_id}]#[fg=$PILL bg=$STRIP]$L#[fg=$DIM bg=$PILL]#{session_name}#{?$A, #[fg=$ASK bold]◆$A#[nobold],}#{?$D, #[fg=$DONE bold]✓$D#[nobold],}#[fg=$PILL bg=$STRIP]$R#[norange]  "
   RIGHT="#{?client_prefix,#[fg=$ASK bold]prefix#[nobold]  ,}#{?#{&&:#{@pitwall_restorable},#{!=:#{@pitwall_restorable},0}},#[fg=$ASK]↺ #{@pitwall_restorable}  ,}#{?#{&&:#{@pitwall_bell},#{!=:#{@pitwall_bell},0}},#[fg=$ASK bold]⚑ #{@pitwall_bell}#[nobold]  ,}"
   tmux set -g @pitwall-tabs-fmt "#[fill=$STRIP bg=$STRIP]#[align=left] #{S:#{?#{==:#{session_name},#{client_session}},$HERE,$AWAY}}#[align=right bg=$STRIP]$RIGHT"
   # The right side gives way as the pane narrows: everything, then cpu, memory and disk, then the clock alone.
@@ -89,7 +91,7 @@ if [ "$(opt @pitwall-layout inline)" = tabs ]; then
     \; setw -g pane-border-status bottom \; setw -g pane-border-format '#{E:@pitwall-rule-fmt}'
   tmux set -g @pitwall_clock "$(date '+%H:%M %d %b')"
   tmux set-hook -g 'client-attached[76]' "run-shell -b \"'$DIR/bin/pitwall-sys'\""
-  tmux run-shell -b "'$DIR/bin/pitwall-sys'"
+  tmux set -gu @pitwall_sys_pid \; run-shell -b "'$DIR/bin/pitwall-sys'" # a running one hands over at its next tick
 elif [ "$(tmux show -gv 'status-format[0]')" = '#{E:@pitwall-tabs-fmt}' ]; then
   tmux set -gu status-format \; set -g status-position "$(opt @pitwall_prev_position bottom)" \
     \; setw -g pane-border-status "$(opt @pitwall_prev_border off)" \; setw -gu pane-border-format \

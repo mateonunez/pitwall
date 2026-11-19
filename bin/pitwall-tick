@@ -10,6 +10,7 @@ pid=$(tmux show -gqv @pitwall_tick_pid)
 [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && exit 0 # already ticking
 tmux set -g @pitwall_tick_pid $$
 trap 'tmux set -gu @pitwall_tick_pid \; set -gu @pitwall_spin 2>/dev/null' EXIT
+trap 'exit 0' TERM INT HUP # quietly: tmux reports a run-shell killed by a signal in the pane
 
 working() { tmux list-panes -a -F '#{E:@pitwall-state-fmt}' 2>/dev/null | grep -qx working; }
 

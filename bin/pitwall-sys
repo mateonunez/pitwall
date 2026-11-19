@@ -65,9 +65,14 @@ if [ "${1:-}" = --once ]; then sample plain; exit 0; fi
 pid=$(tmux show -gqv @pitwall_sys_pid)
 [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && exit 0 # already sampling
 tmux set -g @pitwall_sys_pid $$
-trap 'tmux set -gu @pitwall_sys_pid 2>/dev/null' EXIT
+# Leave quietly: tmux prints "terminated by signal" into the pane for a run-shell that dies of one. Only clear the
+# pid if it is still ours; a newer sampler (the plugin reloaded) takes over by writing its own, and this one
+# notices on its next tick.
+trap '[ "$(tmux show -gqv @pitwall_sys_pid)" = $$ ] && tmux set -gu @pitwall_sys_pid 2>/dev/null; exit 0' EXIT
+trap 'exit 0' TERM INT HUP
 
-while tmux list-clients -F x 2>/dev/null | grep -q x && [ "$(tmux show -gqv @pitwall-layout)" = tabs ]; do
+while [ "$(tmux show -gqv @pitwall_sys_pid)" = $$ ] && [ "$(tmux show -gqv @pitwall-layout)" = tabs ] &&
+  tmux list-clients -F x 2>/dev/null | grep -q x; do
   INTERVAL=$(tmux show -gqv @pitwall-system-interval); INTERVAL=${INTERVAL:-5}
   sys='' sys_short=''
   # In this shell, not a $(subshell): the network rate needs the counters of the last sample.

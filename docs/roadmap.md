@@ -18,6 +18,8 @@ Where pitwall goes next, and the rules it keeps on the way.
 - **The board as a manager.** Filter (`/`), output search (`//`), workspace scope (`w`), views by state, by workspace or one row per workspace (`g`), sort (`s`), help (`?`), and a selection with tested rules (`v`, `V`, `m`).
 - **Workspaces.** tmux sessions as workspaces: `prefix W`, `m` in the board, `pitwall move`, other workspaces that need you in the status line.
 - **Urgent after a while, and the bell.** A lane asking for ten minutes turns red and is sent as `urgent`; Needs you's count can sit in the status line.
+- **Tabs.** `@pitwall-layout tabs`: workspaces as Chrome-style tab groups on top, the usage limits and the machine (cpu, gpu, memory, disk, network, battery) on the panes' bottom rule.
+- **Signals that reach their lane.** Hooks run outside tmux (Codex's shared daemon, some Claude sessions) find their pane by session, directory or Codex thread name; a lane whose subagents still work in the background stays working.
 - **Context on every lane.** Model, context and tokens from each agent's transcript; [CodexBar](https://github.com/steipete/CodexBar) usage limits in the status line.
 
 ## Next
@@ -29,7 +31,7 @@ Where pitwall goes next, and the rules it keeps on the way.
 | **Workspaces, fuller** | A working directory and a note per workspace; close from the picker | A workspace is a place, not just a name |
 | **Saved lanes in the board** | Closed and restorable lanes in their own section; restore or forget one | Coming back after a crash is a list, not a command |
 | **Metrics over time** | A small per-session ledger (turns, tokens, time asking versus working) so `pitwall stats --today` answers where the day went | You see which lanes cost the most and which waited on you the longest |
-| **A board you can filter** | `/` filters lanes as you type; the reason a lane is asking shows on its row | Fifteen lanes stay as quick as four |
+| **Why a lane asks** | The reason a lane is asking shows on its row and its tab | You answer from the board without opening the lane |
 | **A skill for agents** | `skills/pitwall/SKILL.md`, so an orchestrator learns `pitwall ls`, refs and `peek` | An agent reads the fleet and asks before acting |
 
 ## Open questions

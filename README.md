@@ -47,7 +47,9 @@ Restart your agents so they pick up the hooks; Codex asks you to trust each new 
 - **A status line that says who needs you.** `◆` amber: the agent is asking you something. `✓` green: it finished while you were elsewhere, and stays until you visit. A spinner while it works, subagents it left running in the background included, `○` when it rests, `✗` when it has gone. I slip the glyph in front of the window name inside the format your theme already has, so your theme stays yours.
 - **Instant, and quiet when nothing moves.** A change redraws every status line at once and shows a short toast to anyone not already looking at that lane. The spinner turns only while something works, then the ticker exits.
 - **The board, a manager for your lanes.** `prefix A` lists every lane with a live preview of the one under the cursor, and lets you find and handle them from the keyboard: filter as you type (`/`), search what the lanes printed (`//`), look at one workspace (`w`), group by state or workspace, or see one row per workspace when there are fifty of them (`g`), select (`v`, `V`) and move what you selected (`m`). Keys are Colemak and vim, listed below and behind `?`.
-- **Tabs, if your status line is full.** `set -g @pitwall-layout tabs` moves the status line to the top as Chrome-style tab groups: each workspace a pill with a count of who waits there (`idle ◆2`), the one you are in open with its windows as tabs that shrink to fit, a click away. The bottom of your panes becomes a thin rule carrying your usage limits on the left and, with `@pitwall-system on`, the machine on the right: cpu, gpu, memory, free disk, network, battery and the clock, amber only when one needs a look. A sampler reads them every few seconds while a client is attached, in about 80 ms and without root. Switch back with `inline` and your theme gets its status line back.
+- **Tabs, if your status line is full.** `set -g @pitwall-layout tabs` moves the status line to the top as Chrome-style tab groups. Each workspace is a pill with a count of who waits there (`lab ◆1`); the one you are in opens into its windows, numbered for `prefix 1`–`9`, joined by one amber underline like a Chrome tab group, the current one lifted off the strip. Tabs shrink to fit, and a click on a pill or a tab takes you there. The bottom of your panes becomes a thin rule: usage limits on the left and, with `@pitwall-system on`, the machine on the right (cpu, gpu, memory, free disk, network, battery, clock), amber only when one needs a look, giving way to cpu, memory and disk when a pane is narrow. A sampler reads them every few seconds while a client is attached, in about 80 ms and without root. `inline` gives your theme its status line back.
+
+  <img src="preview/pitwall-tabs.png" alt="The tabs layout: on top, pills for the lab workspace with one lane asking, notes with one done, and site; the oss workspace open into four numbered tabs, fastify-orama, opentimeline asking, pitwall current and lifted, mateonunez.co working, all underlined in amber; Needs you's 3 on the right. At the bottom a thin rule with the claude and codex usage limits on the left and cpu, gpu, memory, disk 15G free in amber, network, battery and the clock on the right." width="820">
 - **The jump.** `prefix a` takes you to the next lane that is asking or done. Press it again to cycle.
 - **Several agents in one window.** Each pane is its own lane (`ait.1`, `ait.2`); the window shows the most urgent of them.
 - **Names that mean something.** A window running Claude Code shows up as `2.1.323`; I name it after the agent's directory instead.
@@ -139,7 +141,7 @@ Set them before the plugin loads, like any tmux option.
 | `@pitwall-layout` | `inline` | `tabs`: workspace tab groups on top, limits and the machine on the panes' bottom rule |
 | `@pitwall-system` | `off` | The machine on the bottom rule (tabs layout) |
 | `@pitwall-system-interval` | `5` | Seconds between machine samples |
-| `@pitwall-color-strip` · `-tab` · `-pill` | `#141414` · `#0a0a0a` · `#262626` | Tab strip, current tab (match your terminal background), workspace pills |
+| `@pitwall-color-strip` · `-tab` · `-pill` | `#111111` · `#2a2a2a` · `#1f1f1f` | Tab strip, current tab, workspace pills |
 | `@pitwall-tab-caps` | `on` | Round tab ends; they need a Nerd Font, `off` for plain ends |
 
 ## How it fits together
@@ -160,7 +162,7 @@ The hook runs on every tool call next to whatever else you have hooked, so it st
 
 ## What's next
 
-Metrics over time, a board you can filter by typing, and a skill so agents learn to read the fleet. The reasoning is in [docs/roadmap.md](docs/roadmap.md).
+Lane actions from the board, metrics over time, and a skill so agents learn to read the fleet. The reasoning is in [docs/roadmap.md](docs/roadmap.md).
 
 ## Develop
 
