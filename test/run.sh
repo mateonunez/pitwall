@@ -197,7 +197,7 @@ eq "and one whose session no pane holds changes nothing" "$(state s:two)" workin
 # Codex runs hooks in a shared daemon whose TMUX_PANE names a pane long gone (tmux 3.7 then prints empty fields
 # and exits 0). Two Codex in one directory are told apart by the thread name in their title; a lone Claude by
 # its directory. Fake agents: copies of sleep named like the real processes.
-FAKE=$(mktemp -d); ISOLATED="$ISOLATED $FAKE"
+FAKE=$(mktemp -d "$ROOT/.fake.XXXXXX"); ISOLATED="$ISOLATED $FAKE" # not /tmp: CI mounts it noexec
 for a in codex 2.1.327; do cp /bin/sleep "$FAKE/$a"; command -v codesign >/dev/null && codesign -f -s - "$FAKE/$a" 2>/dev/null; done; mkdir -p "$FAKE/proj" "$FAKE/home"
 printf '{"id":"cx-b","thread_name":"Fix the board"}\n' >"$FAKE/home/session_index.jsonl"
 CA=$($T new-window -d -P -F '#{pane_id}' -t s: -n cxa -c "$FAKE/proj" "exec $FAKE/codex 300")
