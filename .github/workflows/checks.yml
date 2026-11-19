@@ -19,7 +19,7 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -yq tmux
       - name: Syntax
         run: |
-          sh -n pitwall.tmux bin/pitwall bin/pitwall-hook bin/pitwall-tick test/run.sh
+          sh -n pitwall.tmux bin/pitwall bin/pitwall-hook bin/pitwall-tick bin/pitwall-sys test/run.sh
           bash -n bin/pitwall-board
           python3 -m py_compile bin/pitwall-stats bin/pitwall-quota bin/pitwall-signal
       - name: Checks

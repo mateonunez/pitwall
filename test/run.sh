@@ -235,6 +235,20 @@ eq "the records of the windows that shifted follow" "$(cut -f5 "$XDG_STATE_HOME/
 eq "and the moved window's own record, moved by hand" "$(cut -f4,5 "$XDG_STATE_HOME/pitwall/lanes/s-ra")" "s	$($T list-windows -t '=s' -F '#I #W' | awk '$2 == "ra" { print $1 }')"
 $T kill-session -t r \; kill-window -t s:ra
 
+# --- the tabs layout: workspaces as tab groups on top, limits and the machine on the panes' bottom rule ---------
+$T set -g @pitwall-layout tabs \; set -g @pitwall-system off \; set -g @pitwall-quota off
+$T run-shell "'$ROOT/pitwall.tmux'"; $T run-shell "'$ROOT/pitwall.tmux'"
+eq "tabs: the status line moves to the top" "$($T show -gv status-position)" top
+eq "tabs: its first line is pitwall's, set once" "$($T show -gv 'status-format[0]')" '#{E:@pitwall-tabs-fmt}'
+eq "tabs: the bottom bar is the panes' bottom border" "$($T show -gwv pane-border-status)" bottom
+$T set -p -t "$P1" @pitwall_state asking \; set -p -t "$P2" @pitwall_state done \; set -g @pitwall_quota 'Q-LIMITS' \; set -g @pitwall_clock 'C-CLOCK'
+eq "tabs: another workspace is a pill with who waits there" "$($T display -p -t s:one '#{E:@pitwall-tabs-fmt}' | sed 's/#\[[^]]*\]//g' | grep -c 's ◆1 ✓1')" 1
+eq "tabs: the bottom rule carries the limits and the clock" "$($T display -p -t "$P2" '#{E:@pitwall-rule-fmt}' | sed 's/#\[[^]]*\]//g' | tr -s ' ')" " Q-LIMITS C-CLOCK "
+eq "the machine sampler reads at least the cpu" "$("$ROOT/bin/pitwall-sys" --once | grep -c '^cpu [0-9]*%')" 1
+$T set -g @pitwall-layout inline \; run-shell "'$ROOT/pitwall.tmux'"
+eq "switching back gives the theme its status line again" "$($T show -gv status-position) $($T show -gwv pane-border-status)" "bottom off"
+eq "and tmux its own first line" "$($T show -gv 'status-format[0]' | grep -c pitwall-tabs)" 0
+
 # --- the board, driven like a person would: keys in, screen out -------------------------------------------------
 # Its own server with four known lanes (alpha, beta, gamma in lab; delta in oss), the board in a pane of its own.
 B="tmux -L pitwall-board-$$"

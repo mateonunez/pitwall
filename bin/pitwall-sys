@@ -1,0 +1,77 @@
+#!/bin/sh
+# pitwall-sys [--once]: samples the machine (cpu, gpu, memory, disk, network, battery) and the clock for the tabs
+# layout's bottom rule, into @pitwall_system and @pitwall_clock. One per tmux server, only while a client is
+# attached; exits on its own. --once prints one plain sample and exits. Each reading is a builtin or one short
+# command (~30 ms all told); nothing needs root. What the machine cannot tell is left out, never guessed.
+
+ASK=$(tmux show -gqv @pitwall-color-asking 2>/dev/null); ASK=${ASK:-#f59e0b}
+TEXT='#e5e7eb' MUTED='#9ca3af'
+OS=$(uname -s)
+NCPU=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
+rx0='' tx0='' t0=''
+
+# A value, amber when it crosses its line: v <label> <shown> <number> <limit>
+v() {
+  if [ "${3:-0}" -ge "$4" ] 2>/dev/null; then printf '#[fg=%s]%s #[fg=%s bold]%s#[nobold]' "$MUTED" "$1" "$ASK" "$2"
+  else printf '#[fg=%s]%s #[fg=%s]%s' "$MUTED" "$1" "$TEXT" "$2"; fi
+}
+human() { awk -v b="$1" 'BEGIN { split("B K M G", u); i = 1; while (b >= 1024 && i < 4) { b /= 1024; i++ } printf (b < 10 && i > 1 ? "%.1f%s" : "%d%s"), b, u[i] }'; }
+
+sample() { # $1 plain: no tmux styles
+  mode=${1:-} out='' sep=''
+  add() { out="$out$sep$1"; sep="#[fg=#4b5563] · "; }
+  cpu=$(ps -A -o %cpu= 2>/dev/null | awk -v n="$NCPU" '{ s += $1 } END { printf "%d", s / n }')
+  [ -n "$cpu" ] && add "$(v cpu "$cpu%" "$cpu" 90)"
+  if [ "$OS" = Darwin ]; then
+    gpu=$(ioreg -r -d 1 -w 0 -c IOAccelerator 2>/dev/null | sed -n 's/.*"Device Utilization %"=\([0-9]*\).*/\1/p' | head -1)
+    [ -n "$gpu" ] && add "$(v gpu "$gpu%" "$gpu" 90)"
+    free=$(memory_pressure -Q 2>/dev/null | sed -n 's/.*percentage: \([0-9]*\)%.*/\1/p')
+    [ -n "$free" ] && mem=$((100 - free))
+  elif [ -r /proc/meminfo ]; then
+    mem=$(awk '/^MemTotal/ { t = $2 } /^MemAvailable/ { a = $2 } END { if (t) printf "%d", 100 - a * 100 / t }' /proc/meminfo)
+  fi
+  [ -n "${mem:-}" ] && add "$(v mem "$mem%" "$mem" 90)"
+  set -- $(df -kP / 2>/dev/null | awk 'NR == 2 { print $4, $2 }') # free, size (KiB)
+  if [ -n "${2:-}" ]; then
+    used=$(( (100 * ($2 - $1)) / $2 ))
+    add "$(v disk "$(human $(( $1 * 1024 ))) free" "$used" 90)"
+  fi
+  # Network: bytes on the default interface since the last sample.
+  if [ "$OS" = Darwin ]; then
+    ifc=$(route -n get default 2>/dev/null | awk '/interface:/ { print $2 }')
+    set -- $( [ -n "$ifc" ] && netstat -ibn -I "$ifc" 2>/dev/null | awk 'NR == 2 { print $7, $10 }')
+  else
+    ifc=$(awk '$2 == "00000000" { print $1; exit }' /proc/net/route 2>/dev/null)
+    set -- $( [ -n "$ifc" ] && awk -v i="$ifc:" '$1 == i { print $2, $10 }' /proc/net/dev 2>/dev/null)
+  fi
+  now=$(date +%s)
+  if [ -n "${2:-}" ] && [ -n "$rx0" ] && [ "$now" -gt "$t0" ]; then
+    add "#[fg=$MUTED]↓#[fg=$TEXT]$(human $(( ($1 - rx0) / (now - t0) ))) #[fg=$MUTED]↑#[fg=$TEXT]$(human $(( ($2 - tx0) / (now - t0) )))"
+  fi
+  [ -n "${2:-}" ] && rx0=$1 tx0=$2 t0=$now
+  if [ "$OS" = Darwin ]; then
+    bat=$(pmset -g batt 2>/dev/null | sed -n 's/.*[[:space:]]\([0-9]*\)%;.*/\1/p' | head -1)
+  else
+    bat=$(cat /sys/class/power_supply/BAT*/capacity 2>/dev/null | head -1)
+  fi
+  [ -n "$bat" ] && add "$(v ⚡ "$bat%" $((100 - bat)) 85)"
+  if [ "$mode" = plain ]; then printf '%s\n' "$out" | sed 's/#\[[^]]*\]//g'; else printf '%s' "$out"; fi
+}
+
+if [ "${1:-}" = --once ]; then sample plain; exit 0; fi
+
+pid=$(tmux show -gqv @pitwall_sys_pid)
+[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && exit 0 # already sampling
+tmux set -g @pitwall_sys_pid $$
+trap 'tmux set -gu @pitwall_sys_pid 2>/dev/null' EXIT
+
+while tmux list-clients -F x 2>/dev/null | grep -q x && [ "$(tmux show -gqv @pitwall-layout)" = tabs ]; do
+  INTERVAL=$(tmux show -gqv @pitwall-system-interval); INTERVAL=${INTERVAL:-5}
+  sys=''
+  [ "$(tmux show -gqv @pitwall-system)" = on ] && sys=$(sample)
+  clock=$(date '+%H:%M %d %b')
+  # Setting an option redraws the pane borders, where the bottom rule lives: only when something changed.
+  [ "$sys" != "${last_sys:-}" ] || [ "$clock" != "${last_clock:-}" ] && tmux set -g @pitwall_system "$sys" \; set -g @pitwall_clock "$clock" 2>/dev/null
+  last_sys=$sys last_clock=$clock
+  sleep "$INTERVAL"
+done
