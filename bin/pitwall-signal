@@ -11,6 +11,7 @@ A signal that cannot be delivered waits in ~/.local/state/pitwall/signals.jsonl 
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.error
@@ -109,9 +110,46 @@ def status():
         return 1
 
 
+def today():
+    """The last days of stories (/v1/today) as tab-separated rows for the dashboard: T totals, S story, C change.
+
+    Exits 2 when not connected, 3 when the token is refused, 1 when nothing answers (printing the URL it tried)."""
+    try:
+        url, token_file = config()
+    except (OSError, ValueError):
+        return 2  # not connected
+    try:
+        _, d = call(url, "/v1/today", token_for(url, token_file))
+    except urllib.error.HTTPError as error:
+        print(url)
+        return 3 if error.code in (401, 403) else 1  # refused the token, or answering wrong
+    except (OSError, ValueError, urllib.error.URLError):
+        print(url)
+        return 1  # nothing answers there
+    clean = lambda v: " ".join(str(v if v is not None else "").split())  # a row is one line, fields have no tabs
+    # fractions dropped: before Python 3.11 fromisoformat takes only 3 or 6 digits
+    epoch = lambda t: int(datetime.fromisoformat(re.sub(r"\.\d+", "", t).replace("Z", "+00:00")).timestamp()) if t else 0
+    out = [("T", d.get("days"), d.get("stories"), d.get("updates"), d.get("minutes"), url)]
+    for g in d.get("groups") or []:
+        name = clean(g.get("name") or g.get("key"))
+        for s in g.get("stories") or []:
+            changes = s.get("changes") or []
+            last = changes[0] if changes else {}
+            out.append(("S", s.get("conversationId"), name, clean(s.get("title")), epoch(s.get("latestAt")),
+                        s.get("updates"), s.get("minutes"), last.get("milestone") or "", last.get("eventId") or "",
+                        clean((s.get("space") or {}).get("name"))))
+            for c in changes:
+                out.append(("C", s.get("conversationId"), epoch(c.get("at")), clean((c.get("author") or {}).get("name")),
+                            c.get("milestone") or "", clean(c.get("summary")), c.get("eventId") or ""))
+    print("\n".join("\t".join(clean(v) for v in row) for row in out))
+    return 0
+
+
 def main():
     if sys.argv[1:2] == ["--status"]:
         sys.exit(status())
+    if sys.argv[1:2] == ["--today"]:
+        sys.exit(today())
     try:
         url, token_file = config()
     except (OSError, ValueError):

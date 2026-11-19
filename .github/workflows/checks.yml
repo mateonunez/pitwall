@@ -20,7 +20,7 @@ jobs:
       - name: Syntax
         run: |
           sh -n pitwall.tmux bin/pitwall bin/pitwall-hook bin/pitwall-tick bin/pitwall-sys test/run.sh
-          bash -n bin/pitwall-board
+          bash -n bin/pitwall-dash
           python3 -m py_compile bin/pitwall-stats bin/pitwall-quota bin/pitwall-signal
       - name: Checks
         run: test/run.sh

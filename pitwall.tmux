@@ -9,10 +9,9 @@ opt() { v=$(tmux show -gqv "$1"); printf %s "${v:-$2}"; }
 ASK=$(opt @pitwall-color-asking '#f59e0b')
 DONE=$(opt @pitwall-color-done '#00c758')
 GONE=$(opt @pitwall-color-gone '#fb2c36')
-KEY_BOARD=$(opt @pitwall-key-board 'A')
 KEY_NEXT=$(opt @pitwall-key-next 'a')
 KEY_RESTORE=$(opt @pitwall-key-restore 'R')
-KEY_WORKSPACES=$(opt @pitwall-key-workspaces 'W')
+KEY_DASH=$(opt @pitwall-key-dashboard 'Space')
 
 # The processes that make a pane a lane even before (or without) a hook. Claude Code shows up as its version,
 # e.g. 2.1.323; Hermes runs as python, so it is told by its title instead (below).
@@ -114,19 +113,23 @@ tmux set-hook -g 'client-session-changed[73]' "$CLEAR"
 tmux set-hook -g 'client-attached[73]' "$CLEAR"
 
 # With renumber-windows on, a window moving out of a session closes its gap too, not only one that closes
-# (prefix . , the board's m, pitwall move). Deferred: while the hook runs, the window is still linked.
+# (prefix . , the dashboard's move, pitwall move). Deferred: while the hook runs, the window is still linked.
 tmux set-hook -g 'window-unlinked[75]' "if -F '#{renumber-windows}' \"run-shell -b \\\"'$DIR/bin/pitwall' _reindex '#{hook_session_name}' '#{hook_window}'\\\"\""
 [ "$(tmux show -gv renumber-windows)" = on ] && tmux run-shell -b "'$DIR/bin/pitwall' _reindex"
 
 # Board and jump. Not choose-tree: its j/k are compiled into tmux, and navigation here is Colemak (n/e).
-# The board wants a bash that reads with sub-second timeouts; the macOS /bin/bash 3.2 only manages whole seconds.
+# The dashboard wants a bash that reads with sub-second timeouts; the macOS /bin/bash 3.2 only manages whole seconds.
 BASH_BIN=bash
 for b in /opt/homebrew/bin/bash /usr/local/bin/bash; do [ -x "$b" ] && BASH_BIN=$b && break; done
-# Every key carries a note (-N), so tmux's own help (prefix ?) lists pitwall's keys too.
-tmux bind -N "pitwall: the board (/ filter, w workspace, v select, m move, ? keys)" "$KEY_BOARD" display-popup -E -w 84% -h 78% -b rounded -S "fg=#404040" "'$BASH_BIN' '$DIR/bin/pitwall-board'"
+# Every key carries a note (-N), so tmux's own help (prefix ?) lists pitwall's keys too. One key opens the
+# dashboard, where everything else is; the jump and restore keep keys of their own because they are one step.
+tmux bind -N "pitwall: the dashboard (type to find a lane, a workspace or an action; tab for actions)" "$KEY_DASH" display-popup -E -w 84% -h 78% -b rounded -S "fg=#404040" "'$BASH_BIN' '$DIR/bin/pitwall-dash'"
 tmux bind -N "pitwall: next lane that needs you (again to cycle)" "$KEY_NEXT" run-shell "'$DIR/bin/pitwall' next"
-tmux bind -N "pitwall: workspaces (go, c new, r rename)" "$KEY_WORKSPACES" display-popup -E -w 60% -h 50% -b rounded -S "fg=#404040" "'$BASH_BIN' '$DIR/bin/pitwall-ws'"
 tmux bind -N "pitwall: restore the lanes a dead tmux took with it" "$KEY_RESTORE" display-popup -E -w 70% -h 50% -b rounded -S "fg=#404040" "'$DIR/bin/pitwall' _restore-prompt"
+# Keys earlier versions bound and the dashboard replaces: unbound only while they still point at pitwall.
+for k in $(tmux list-keys -T prefix 2>/dev/null | awk '/pitwall-board|pitwall-ws/ { for (i = 1; i < NF; i++) if ($i == "prefix") { print $(i + 1); break } }'); do
+  tmux unbind "$k"
+done
 
 # Lanes may already be working when the plugin loads (or a client attaches): start the spinner.
 tmux set-hook -g 'client-attached[74]' "run-shell -b \"'$DIR/bin/pitwall-tick'\""

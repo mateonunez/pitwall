@@ -1,7 +1,7 @@
 # pitwall
 
 <p align="center">
-  <img src="preview/pitwall-board.png" alt="The pitwall board over the tabs layout: on top the lab workspace open into numbered tabs under an amber underline and oss as a pill with one lane asking. In the board a filter reading / ait leaves two of six lanes, both selected with a blue dot; the one under the cursor, asking for a permission, shows in the live preview; the footer reads 2 selected, m move 2 lanes. At the bottom a thin rule with the usage limits and the machine." width="820">
+  <img src="preview/pitwall-dash.png" alt="The pitwall dashboard, opened with prefix Space over the tabs layout: the search reads ait and lists the lanes ait.2, asking, and ait.1, working, each with its task underneath; below them the actions on ait.2 with their keys, ctrl-s write, ctrl-d diff in lumen, ctrl-o nvim, ctrl-g lazygit, ctrl-p PR, ctrl-w move, ctrl-r rename, ctrl-v select. On the right, ait.2 asking to run a command, with its branch and changes and 1 2 3 to answer. On top the views Lanes and OpenTimeline, the counts and the usage limits; at the bottom the keys." width="820">
 </p>
 
 <p align="center">
@@ -12,7 +12,7 @@
 
 Hey there! I'm **pitwall**. You run a few coding agents in tmux, and I keep an eye on all of them for you. Your status line tells you which one is working, which one is waiting for you, and which one finished while you were looking somewhere else. One key lists them all; another takes you straight to the one that needs you.
 
-Your agents tell me what they are doing through a hook. I never poll, never read your prompts and never touch the network.
+Your agents tell me what they are doing through a hook. I never poll and never read your prompts; I touch the network only when you connect OpenTimeline.
 
 > **Status:** pre-1.0, used every day with Claude Code, Codex and Hermes. Things can still change between releases.
 
@@ -61,13 +61,12 @@ Then add `run-shell ~/.tmux/plugins/pitwall/pitwall.tmux` to your tmux config, r
 
 | Key | Does |
 | --- | --- |
-| `prefix A` | **The board**: every lane, with a live preview |
+| `prefix Space` | **The dashboard**: every lane, workspace and action, in one place |
 | `prefix a` | **Jump** to the next lane that needs you; again to cycle |
-| `prefix W` | **Workspaces**: go to one, create or rename one |
 | `prefix R` | **Restore** the agents a dead tmux took with it |
 | `prefix ?` | tmux's own help, which lists these too |
 
-Forgot one? `pitwall keys` prints every key, in tmux and in the board.
+Forgot one? `pitwall keys` prints every key, in tmux and in the dashboard.
 
 ## Which agents
 
@@ -105,15 +104,15 @@ Restore already knows how to resume grok, opencode and pi. For any other agent, 
   - `○` when it rests, and `✗` when it has gone.
 
   I slip these into the format your theme already has, so your theme stays yours.
-- **The board** (`prefix A`), a small manager for your lanes. It opens on the lane you were in. Filter as you type (`/`), search what the lanes printed (`//`), look at one workspace (`w`), or see one row per workspace when there are fifty of them (`g`). Select lanes (`v`, `V`) and move them to another workspace (`m`). Their agents keep running.
+- **The dashboard** (`prefix Space`), one place for everything. Start typing to find a lane, a workspace or an action. A lane that asks can be answered right there with `1` `2` `3`, without leaving the dashboard. The actions you use most are one `ctrl` key away, even while you search: `ctrl-d` the worktree's diff in lumen, `ctrl-o` nvim in its folder, `ctrl-g` lazygit, `ctrl-p` its PR, `ctrl-s` write to the agent, `ctrl-w` move it to a workspace (and `undo` puts it back). `shift-tab` lists them all, with reading its whole output, interrupting or restarting the agent, and more. It opens on the lane you were in, and shows who waits for you first, with what each agent is on.
 - **The jump** (`prefix a`) takes you to the next lane that is asking or done.
 - **Several agents in one window.** Each pane is its own lane (`ait.1`, `ait.2`), and the window shows the most urgent one.
 - **Names that mean something.** A window running Claude Code would show up as `2.1.323`; I name it after the agent's folder instead.
 - **Your agents survive a dead tmux.** When the tmux server dies, you see `↺ 4` the next time you start it. `prefix R`, or `pitwall restore` from any terminal, rebuilds the sessions, windows and panes and resumes each agent where it was. An agent you closed on purpose stays closed.
-- **Workspaces.** A workspace is a tmux session. `prefix W` lists them with who waits in each, and you move lanes between them from the board or with `pitwall move farm qa`. With tmux's `renumber-windows` on, moving a window out leaves no gap in the numbers.
-- **Context on every lane.** The board's preview shows the model, how full the context is and the tokens used. Your Claude and Codex usage limits sit in the status line with the time left to each reset (`claude 5h 8% ↻4h · wk 34% ↻5d`), read from [CodexBar](https://github.com/steipete/CodexBar). They turn amber at 80%.
+- **Workspaces.** A workspace is a tmux session. The dashboard lists them with who waits in each, and moves lanes between them, as does `pitwall move website oss`. With tmux's `renumber-windows` on, moving a window out leaves no gap in the numbers.
+- **Context on every lane.** The dashboard's preview shows the model, how full the context is and the tokens used. Your Claude and Codex usage limits sit in the status line with the time left to each reset (`claude 5h 8% ↻4h · wk 34% ↻5d`), read from [CodexBar](https://github.com/steipete/CodexBar). They turn amber at 80%.
 - **Lanes as worktrees.** `pitwall new fix-login` creates a worktree with [gwm](https://github.com/kbrdn1/gwm), opens a window there and starts your agent. `pitwall done @3` shows the diff in [lumen](https://github.com/jnsahaj/lumen) and removes the worktree if you confirm.
-- **Beyond the terminal.** Connect an [OpenTimeline](https://github.com/mateonunez/opentimeline) seat with `pitwall ot connect <token-file>`: a lane that starts asking shows up in its Needs you and clears when the lane moves on. Only the state, the agent and its metrics are sent, never prompts or task titles.
+- **Beyond the terminal.** Connect an [OpenTimeline](https://github.com/mateonunez/opentimeline) seat with `pitwall ot connect <token-file>`: a lane that starts asking shows up in its Needs you and clears when the lane moves on. Only the state, the agent and its metrics are sent, never prompts or task titles. The dashboard's second view (`tab`) reads the last days of stories back, as a timeline per project, and links each story to its lane.
 - **Made for agents as well.** `pitwall ls` prints one line per lane with a short ref (`@1 lab/opentimeline asking 3m codex Cut the 0.2.0 release`), `--json` for scripts, and `pitwall peek @1` shows a lane's last lines.
 
 ## Tabs, if your status line is full
@@ -130,23 +129,27 @@ set -g @pitwall-system on   # optional: cpu, gpu, memory, disk, network, battery
 
 The numbers are read every few seconds, only while you are attached, in about 80 ms and without root. The round tab ends need a [Nerd Font](https://www.nerdfonts.com); `set -g @pitwall-tab-caps off` gives plain ends. `set -g @pitwall-layout inline` brings your theme's status line back.
 
-## In the board
+## In the dashboard
+
+It works like a command palette: you type, it finds. Each lane shows what its agent is on, and the preview on the right adds its branch and changes, how full its context is, and the OpenTimeline stories about it.
 
 | Key | Does |
 | --- | --- |
-| `n` `e` · `d` `D` · `1`–`9` | Down, up · first, last · jump to a row |
-| `i` `⏎` | Go to the lane |
-| `/` | Filter as you type (name, workspace, task, agent, state); `⏎` keeps it, `esc` drops it |
-| `//` | Search the lanes' recent output (`//rate limit`), on `⏎` |
-| `w` | One workspace, the next one, then all again |
-| `g` | Group by state, by workspace, or one row per workspace |
-| `s` | Sort by urgency, newest or name |
-| `v` · `V` | Select the lane · select everything shown |
-| `m` | Move the selection (or the lane under the cursor) to a workspace; `c` there creates one |
-| `esc` | Drop the selection, then the filter, then close |
-| `?` · `h` `q` | Every key · close |
+| *type* | Find lanes, workspaces, actions and commands; `//rate limit` searches what the lanes printed, on `⏎` |
+| `ctrl-n` `ctrl-e` | Down, up (the arrows too) |
+| `⏎` | Go to the lane · switch to the workspace · open the story · run the action |
+| `ctrl` + key | An action on the lane under the cursor, at once, even mid-search: `ctrl-d` the worktree's diff in lumen · `ctrl-o` nvim in its folder · `ctrl-g` lazygit · `ctrl-p` its PR · `ctrl-s` write to the agent · `ctrl-w` move to a workspace · `ctrl-r` rename · `ctrl-v` select (the search stays, to pick several) · `ctrl-t` new gwm worktree · `ctrl-y` copy the resume command · `ctrl-x` close, after a `y` |
+| `1` `2` `3` | Answer the lane under the cursor when it asks (with the search empty) |
+| `space` | Read the lane's whole output, in `less` (with the search empty) |
+| `shift-tab` or `→` | Every action on what is under the cursor, each on one key (and `n` `e` to move); besides the ones above: `D` the branch's diff against its base · `M` move and go there · `a` new lane (claude, codex, hermes) · `i` interrupt · `R` restart on the same session |
+| `undo` | Type it: the command that puts the tabs of the last move back |
+| `tab` | The other view: Lanes, OpenTimeline |
+| `esc` or `←` | Back: the actions, then the search, then the selection, then close (`ctrl-c` closes from anywhere) |
+| `?` | Every key (with the search empty) |
 
-Keys follow Colemak and vim (`n` `e` down and up). Selections are careful: they follow lanes as they re-sort, lanes hidden by the filter are counted ("1 hidden by the filter"), the footer always names what `m` will move, and `esc` peels one layer at a time. A test drives the real board for each of these.
+**OpenTimeline, inside the dashboard.** With a seat connected, `tab` shows the last seven days of stories, grouped by project, with what needs you (a `blocker`) first. On the right are the story's latest updates and the lanes it belongs with: `⏎` opens it in the browser, and `ctrl-g` takes you to its lane. When the server does not answer, the view says so and offers to start it, to ask your agent to bring it up, or to download it, and it retries on its own.
+
+Selections are careful: they follow lanes as they re-sort, selected lanes the search hides are counted ("1 not shown"), an action always names what it moves ("Move 2 lanes to"), and a move clears the selection. A test drives the real dashboard for each of these.
 
 ## Commands
 
@@ -155,7 +158,7 @@ Keys follow Colemak and vim (`n` `e` down and up). Selections are careful: they 
 | `pitwall ls [--json]` | Every lane, the ones that need you first |
 | `pitwall peek @N [lines]` | The last lines of a lane |
 | `pitwall go @N` · `pitwall next` | Go to a lane · to the next one that needs you |
-| `pitwall board` | The board, outside a popup |
+| `pitwall dash` | The dashboard, outside a popup |
 | `pitwall stats [@N]` | Model, context and tokens per lane |
 | `pitwall quota [--refresh]` | Claude and Codex usage limits |
 | `pitwall saved` | The agents I can bring back |
@@ -176,7 +179,7 @@ Set them in your tmux config before the plugin line.
 
 | Option | Default | Does |
 | --- | --- | --- |
-| `@pitwall-key-board` · `-next` · `-workspaces` · `-restore` | `A` · `a` · `W` · `R` | The keys after `prefix` |
+| `@pitwall-key-dashboard` · `-next` · `-restore` | `Space` · `a` · `R` | The keys after `prefix` |
 | `@pitwall-layout` | `inline` | `tabs` for the layout above |
 | `@pitwall-system` | `off` | The machine's numbers on the bottom line (tabs layout) |
 | `@pitwall-system-interval` | `5` | Seconds between readings |
@@ -185,7 +188,10 @@ Set them in your tmux config before the plugin line.
 | `@pitwall-urgent-after` | `600` | Seconds of asking before a lane turns red; `0` turns it off |
 | `@pitwall-toast` | `on` | A short message when a lane starts asking or finishes |
 | `@pitwall-rename` | `on` | Name agent windows after their folder |
-| `@pitwall-agent` | `claude` | The agent `pitwall new` starts |
+| `@pitwall-agent` | `claude` | The agent `pitwall new` and the dashboard start |
+| `@pitwall-ot-dir` · `-ot-start` | `~/opentimeline` · `pnpm dev` | Where OpenTimeline lives on this machine, and how the dashboard starts it |
+| `@pitwall-ot-web` | the API's address, `4430` for `4431` | OpenTimeline's web app, for links to stories |
+| `@pitwall-ot-repo` | its GitHub repo | Where the dashboard downloads it from |
 | `@pitwall-agents` | claude, codex, gemini, qwen, opencode, grok, pi and more | Programs that make a pane a lane, as a regex |
 | `@pitwall-resume-<agent>` | known for claude, codex, hermes, grok, opencode, pi | How a saved session resumes, `{id}` for its id |
 | `@pitwall-color-asking` · `-done` · `-gone` | `#f59e0b` · `#00c758` · `#fb2c36` | Glyph colours |
@@ -211,7 +217,7 @@ flowchart LR
   hook -- "while working" --> tick["bin/pitwall-tick<br/>spinner frames"]
   tick -- "@pitwall_spin" --> tmux
   tmux --> status["status line<br/>formats only"]
-  tmux --> board["bin/pitwall-board<br/>popup"]
+  tmux --> dash["bin/pitwall-dash<br/>popup"]
   tmux --> cli["bin/pitwall<br/>ls · peek · next"]
   visit(["you visit a lane"]) -- "tmux hook" --> tmux
 ```
@@ -222,7 +228,7 @@ Some agents run their hooks outside tmux: Codex from a shared daemon, Hermes fro
 
 ## What's next
 
-Lane actions from the board, metrics over time, and a skill so agents learn to read the fleet. The reasoning is in [docs/roadmap.md](docs/roadmap.md).
+Workspace recipes (`pitwall up`), lanes in nvim, metrics over time, and a skill so agents learn to read the fleet. The reasoning is in [docs/roadmap.md](docs/roadmap.md).
 
 ## Develop
 
