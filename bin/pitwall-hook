@@ -1,5 +1,5 @@
 #!/bin/sh
-# pitwall-hook <Event> [harness]: called by Claude Code and Codex hooks; sets the lane state on this pane.
+# pitwall-hook <Event> [harness]: called by Claude Code, Codex and Hermes hooks; sets the lane state on this pane.
 # A window can hold several agents, so the state lives on the pane, never the window.
 # Hot path: it runs on every tool call next to other hooks, so plain sh, two tmux calls when nothing changes,
 # never the network. A change redraws every status line at once instead of waiting for status-interval.
@@ -20,13 +20,26 @@ json() { # json <key>: a string field of the payload, in plain sh (no process on
 
 TAB=$(printf '\t')
 
+# The session's directory. Hermes runs its turns in its gateway, so a hook's cwd is the gateway's (~/.hermes):
+# the session's own directory is in Hermes's state.db, read-only, for a session id of plain characters.
+CWD=$(json cwd)
+if [ "$harness" = hermes ] && command -v sqlite3 >/dev/null 2>&1; then
+  s=$(json session_id)
+  case $s in '' | *[!A-Za-z0-9:_.-]*) ;; *)
+    d=$(sqlite3 -readonly "${HERMES_HOME:-$HOME/.hermes}/state.db" "select cwd from sessions where id = '$s'" 2>/dev/null)
+    [ -n "$d" ] && CWD=$d
+    ;;
+  esac
+fi
+
 # The pane of this event when TMUX_PANE does not name a live one. Claude sometimes runs hooks without the tmux
 # environment (a long, forked session); Codex runs them in its shared app-server daemon, whose TMUX_PANE is
-# whatever pane first started it. First the pane that already holds this session; else the one agent pane of
-# this harness in the session's directory; two Codex in one directory are told apart by the thread name Codex
-# puts in the pane title. Ambiguous or unknown: no pane, rather than a wrong one.
+# whatever pane first started it; Hermes runs them in its gateway, with no tmux at all. First the pane that
+# already holds this session; else the one agent pane of this harness in the session's directory; two Codex in
+# one directory are told apart by the thread name Codex puts in the pane title. Ambiguous or unknown: no pane,
+# rather than a wrong one.
 resolve() {
-  s=$(json session_id) c=$(json cwd) p=''
+  s=$(json session_id) c=$CWD p=''
   [ -n "$s" ] && p=$(tmux list-panes -a -f "#{==:#{@pitwall_session},$s}" -F '#{pane_id}' 2>/dev/null | head -1)
   if [ -z "$p" ] && [ -n "$c" ]; then
     c=$(cd "$c" 2>/dev/null && pwd -P || printf '%s' "$c") # tmux reports the physical path (/private/var, not /var)
@@ -35,7 +48,7 @@ resolve() {
       t=$(grep -h "\"id\":\"$s\"" "${CODEX_HOME:-$HOME/.codex}/session_index.jsonl" 2>/dev/null | tail -1 | sed -n 's/.*"thread_name":"\([^"]*\)".*/\1/p')
     p=$(tmux list-panes -a -F "#{pane_id}$TAB#{pane_current_path}$TAB#{pane_current_command}$TAB#{pane_title}" 2>/dev/null |
       awk -F '\t' -v c="$c" -v h="$harness" -v t="$t" '
-        $2 == c && (h == "codex" ? $3 == "codex" : $3 ~ /^([0-9]+\.[0-9]+\.[0-9]+|claude|node)$/) {
+        $2 == c && (h == "codex" ? $3 == "codex" : h == "hermes" ? ($4 ~ /^hermes/ || $3 ~ /^python/) : $3 ~ /^([0-9]+\.[0-9]+\.[0-9]+|claude|node)$/) {
           n++; p = $1; if (t != "" && index($4, t) == 1) { m++; q = $1 } }
         END { if (n == 1) print p; else if (m == 1) print q }')
   fi
@@ -101,7 +114,7 @@ record() {
   [ -n "$sid" ] || return 0
   dir=${XDG_STATE_HOME:-$HOME/.local/state}/pitwall/lanes
   [ -d "$dir" ] || mkdir -p "$dir" 2>/dev/null || return 0
-  cwd=$(json cwd)
+  cwd=$CWD
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$harness" "$sid" "${cwd:-$PWD}" "$sname" "$widx" "$wname" "$pidx" "$server" "$now" \
     >"$dir/$sid.tmp" 2>/dev/null && mv -f "$dir/$sid.tmp" "$dir/$sid"
 }
@@ -137,7 +150,7 @@ esac
 set -- set -p -t "$TMUX_PANE" @pitwall_state "$state" ';' \
   set -p -t "$TMUX_PANE" @pitwall_since "$now" ';' \
   set -p -t "$TMUX_PANE" @pitwall_harness "$harness" ';' \
-  set -p -t "$TMUX_PANE" @pitwall_name "$(d=$(json cwd); d=${d:-$PWD}; printf '%s' "${d##*/}")" ';' \
+  set -p -t "$TMUX_PANE" @pitwall_name "$(d=${CWD:-$PWD}; printf '%s' "${d##*/}")" ';' \
   set -pu -t "$TMUX_PANE" @pitwall_urgent
 for c in $(tmux list-clients -F '#{client_name}' 2>/dev/null); do
   set -- "$@" ';' refresh-client -S -t "$c"
