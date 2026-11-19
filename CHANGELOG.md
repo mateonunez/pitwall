@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/mateonunez/pitwall/compare/v0.1.4...v0.1.5) (2026-11-19)
+
+
+### Bug Fixes
+
+* the bottom rule gives way as a pane narrows instead of cutting the machine's figures ([44b5b32](https://github.com/mateonunez/pitwall/commit/44b5b323c9d0739a542568260288847361f43801))
+
 ## [0.1.4](https://github.com/mateonunez/pitwall/compare/v0.1.3...v0.1.4) (2026-11-19)
 
 
