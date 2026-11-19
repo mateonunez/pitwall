@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.8](https://github.com/mateonunez/pitwall/compare/v0.1.7...v0.1.8) (2026-11-19)
+
+
+### Features
+
+* Hermes lanes through its gateway, and more agents recognised and resumed ([#9](https://github.com/mateonunez/pitwall/issues/9)) ([727717b](https://github.com/mateonunez/pitwall/commit/727717b744dccf60654ba977c25b2563b5944a13))
+
 ## [0.1.7](https://github.com/mateonunez/pitwall/compare/v0.1.6...v0.1.7) (2026-11-19)
 
 
