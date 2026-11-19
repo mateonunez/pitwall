@@ -87,7 +87,7 @@ cmd_go() { jump "$(resolve "${1:?usage: pitwall go @N}")"; }
 # Visiting a window: its panes that finished while you were away become idle (the tmux hook calls this).
 cmd_seen() {
   tmux list-panes -t "${1:?usage: pitwall seen <window>}" -F '#{pane_id} #{@pitwall_state}' | while read -r pane state; do
-    [ "$state" = done ] && tmux set -p -t "$pane" @pitwall_state idle
+    if [ "$state" = done ]; then tmux set -p -t "$pane" @pitwall_state idle; fi # not &&: under set -e a false test ending the loop fails the command
   done
   tmux refresh-client -S 2>/dev/null || true
 }
@@ -126,9 +126,9 @@ cmd_quota() {
   [ -x "$bar" ] || return 0
   tmux set -g @pitwall_quota_at "$(date +%s)" # claim the refresh first, so lanes finishing together run it once
   "$bar" usage --format json --provider both 2>/dev/null | "$DIR/bin/pitwall-quota" | {
-    IFS= read -r fmt
-    IFS= read -r plain
-    [ -n "$plain" ] && tmux set -g @pitwall_quota "$fmt" \; set -g @pitwall_quota_plain "$plain"
+    IFS= read -r fmt || true # nothing from CodexBar is not a failure
+    IFS= read -r plain || true
+    if [ -n "$plain" ]; then tmux set -g @pitwall_quota "$fmt" \; set -g @pitwall_quota_plain "$plain"; fi
   }
 }
 
@@ -369,7 +369,7 @@ cmd_restore() {
     tmux set -p -t "$pane" @pitwall_session "$sid" \; send-keys -t "$pane" "cd '$(printf '%s' "$cwd" | sed "s/'/'\\\\''/g")' && $cmd" Enter
     # The record now points at this server, so restoring again does not open it twice.
     f="$STATE/lanes/$sid"
-    [ -f "$f" ] && awk -F '\t' -v OFS='\t' -v s="$(server_pid)" '{ $8 = s; print }' "$f" >"$f.tmp" && mv -f "$f.tmp" "$f"
+    if [ -f "$f" ]; then awk -F '\t' -v OFS='\t' -v s="$(server_pid)" '{ $8 = s; print }' "$f" >"$f.tmp" && mv -f "$f.tmp" "$f"; fi
   done
   [ "$mode" = --dry ] || { tmux set -g @pitwall_restorable 0 2>/dev/null; echo "attach with: tmux attach"; }
 }

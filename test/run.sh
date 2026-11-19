@@ -55,6 +55,11 @@ TMUX="$SOCK,0,0" "$ROOT/bin/pitwall" ls --json | python3 -I -c 'import json,sys;
 
 $T select-window -t s:two; sleep 0.3
 eq "visiting the lane clears done" "$(state s:two)" idle
+# tmux shows a background command's non-zero exit in the pane: seen and the quota refresh must exit 0 on no-ops.
+eq "seen on a window with nothing done exits 0" "$(TMUX="$SOCK,0,0" "$ROOT/bin/pitwall" seen s:one >/dev/null; echo $?)" 0
+$T set -g @pitwall-codexbar /usr/bin/true
+eq "a quota refresh with nothing to show exits 0" "$(TMUX="$SOCK,0,0" "$ROOT/bin/pitwall" quota --refresh >/dev/null 2>&1; echo $?)" 0
+$T set -gu @pitwall-codexbar
 
 hook "$P1" Notification '{"notification_type":"permission_prompt"}'; eq "permission Notification → asking" "$(state s:one)" asking
 hook "$P1" SessionEnd;        eq "SessionEnd → gone" "$(state s:one)" gone
