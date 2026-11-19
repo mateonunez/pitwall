@@ -446,8 +446,17 @@ printf '%s[?25l%s[?7l' "$E" "$E" # hide the cursor; clip long preview lines inst
 # bash 4+ reads with a fractional timeout, so the spinner turns; the macOS bash 3.2 refreshes once a second.
 if ((BASH_VERSINFO[0] >= 4)); then FRAME=0.1 ESCWAIT=0.03 RELOAD=10; else FRAME=1 ESCWAIT=1 RELOAD=1; fi
 
+# Start on the lane you opened the board from: the pane behind the popup (PITWALL_FROM names another), else a
+# lane in the same window, else the top of the list.
+read -r from from_win <<<"$(tmux display -p ${PITWALL_FROM:+-t "$PITWALL_FROM"} '#{pane_id} #{window_id}' 2>/dev/null)"
+cur_id=${from-}
 resize
 load
+if [ "$cur_id" != "${from-}" ] && [ -n "${from_win-}" ]; then
+  for p in $(tmux list-panes -t "$from_win" -F '#{pane_id}' 2>/dev/null); do
+    case "$US${L_id[*]-}$US" in *[[:space:]$US]"$p"[[:space:]$US]*) cur_id=$p && view && break ;; esac
+  done
+fi
 peek
 draw
 stats_start

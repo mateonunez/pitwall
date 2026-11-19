@@ -105,7 +105,7 @@ Restore already knows how to resume grok, opencode and pi. For any other agent, 
   - `○` when it rests, and `✗` when it has gone.
 
   I slip these into the format your theme already has, so your theme stays yours.
-- **The board** (`prefix A`), a small manager for your lanes. Filter as you type (`/`), search what the lanes printed (`//`), look at one workspace (`w`), or see one row per workspace when there are fifty of them (`g`). Select lanes (`v`, `V`) and move them to another workspace (`m`). Their agents keep running.
+- **The board** (`prefix A`), a small manager for your lanes. It opens on the lane you were in. Filter as you type (`/`), search what the lanes printed (`//`), look at one workspace (`w`), or see one row per workspace when there are fifty of them (`g`). Select lanes (`v`, `V`) and move them to another workspace (`m`). Their agents keep running.
 - **The jump** (`prefix a`) takes you to the next lane that is asking or done.
 - **Several agents in one window.** Each pane is its own lane (`ait.1`, `ait.2`), and the window shows the most urgent one.
 - **Names that mean something.** A window running Claude Code would show up as `2.1.323`; I name it after the agent's folder instead.
