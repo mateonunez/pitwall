@@ -336,6 +336,12 @@ eq "v in the workspaces view selects that workspace's lanes" "$(screen | grep -c
 esc
 keys Enter
 until_screen "view state" && eq "⏎ opens a workspace, filter cleared: only its lanes" "$(screen | grep -cE '[○◆✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (alpha|beta|gamma|delta) ')" 1
+# Opened from a lane, the board starts on it, not on the top row.
+G=$($B display -p -t lab:gamma '#{pane_id}')
+$B new-session -d -s ui2 -x 150 -y 45 "env TERM=xterm-256color PITWALL_FROM=$G '$BASH_BIN' '$ROOT/bin/pitwall-board'"
+i=0; until $B capture-pane -p -t ui2 | grep -q 'gamma' || [ $i -ge 40 ]; do sleep 0.1; i=$((i + 1)); done; sleep 0.3
+eq "opened from a lane, the board starts on it" "$($B capture-pane -p -t ui2 | grep '▌' | grep -c gamma)" 1
+eq "opened from anywhere else, on the top row as before" "$(screen | grep '▌' | grep -c 'alpha\|delta\|beta\|gamma')" 1
 $B kill-server
 
 exit $fail
