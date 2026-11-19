@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.10](https://github.com/mateonunez/pitwall/compare/v0.1.9...v0.1.10) (2026-11-19)
+
+
+### Features
+
+* the board opens on the lane you were in ([#14](https://github.com/mateonunez/pitwall/issues/14)) ([a931e96](https://github.com/mateonunez/pitwall/commit/a931e9691adad5e81cad54730d0697bd1180508f))
+
 ## [0.1.9](https://github.com/mateonunez/pitwall/compare/v0.1.8...v0.1.9) (2026-11-19)
 
 
