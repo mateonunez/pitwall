@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.6](https://github.com/mateonunez/pitwall/compare/v0.1.5...v0.1.6) (2026-11-19)
+
+
+### Features
+
+* clearer tabs, the open workspace's tabs numbered and underlined as one group, the current one lifted ([4fe8037](https://github.com/mateonunez/pitwall/commit/4fe8037286db54fbafb1f5b36cb24dcff57ff2f9))
+
 ## [0.1.5](https://github.com/mateonunez/pitwall/compare/v0.1.4...v0.1.5) (2026-11-19)
 
 
