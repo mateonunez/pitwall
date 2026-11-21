@@ -124,7 +124,7 @@ set -g @pitwall-system on   # optional: cpu, gpu, memory, disk, network, battery
 
 <img src="preview/pitwall-tabs.png" alt="The tabs layout: on top, pills for the lab workspace with one lane asking, notes with one done, and site; the oss workspace open into four numbered tabs, fastify-orama, opentimeline asking, pitwall current and lifted, mateonunez.co working, all underlined in amber; Needs you's 3 on the right. At the bottom a thin rule with the claude and codex usage limits on the left and cpu, gpu, memory, disk 15G free in amber, network, battery and the clock on the right." width="820">
 
-- **On top: your workspaces, as Chrome-style tab groups.** Each workspace is a pill that counts who waits there (`lab ◆1`). The one you are in opens into its windows: numbered for `prefix 1`–`9`, joined by an amber underline, with the current one lifted. Tabs shrink to fit, and clicking a pill or a tab takes you there.
+- **On top: your workspaces, as Chrome-style tab groups.** Each workspace is a pill that counts who waits there and who works (`lab ◆1 ⠙2`), so the numbers of your tabs never move. The one you are in opens into its windows: numbered for `prefix 1`–`9`, joined by an amber underline, with the current one lifted. Tabs shrink to fit, and clicking a pill or a tab takes you there.
 - **At the bottom: a thin line with the numbers.** Your usage limits are on the left. With `@pitwall-system on`, the right side shows the machine: cpu, gpu, memory, free disk, network, battery and the clock. A value turns amber only when it needs a look. In a narrow pane it keeps cpu, memory and disk.
 
 The numbers are read every few seconds, only while you are attached, in about 80 ms and without root. The round tab ends need a [Nerd Font](https://www.nerdfonts.com); `set -g @pitwall-tab-caps off` gives plain ends. `set -g @pitwall-layout inline` brings your theme's status line back.
@@ -135,7 +135,7 @@ It works like a command palette: you type, it finds. Each lane shows what its ag
 
 | Key | Does |
 | --- | --- |
-| *type* | Find lanes, workspaces, actions and commands; `//rate limit` searches what the lanes printed, on `⏎` |
+| *type* | Find lanes, workspaces, actions and commands. Name an action and a lane, like `rename ait` or `diff website`, and that action comes first, ready for `⏎`. `//rate limit` searches what the lanes printed, on `⏎` |
 | `ctrl-n` `ctrl-e` | Down, up (the arrows too) |
 | `⏎` | Go to the lane · switch to the workspace · open the story · run the action |
 | `ctrl` + key | An action on the lane under the cursor, at once, even mid-search: `ctrl-d` the worktree's diff in lumen · `ctrl-o` nvim in its folder · `ctrl-g` lazygit · `ctrl-p` its PR · `ctrl-s` write to the agent · `ctrl-w` move to a workspace · `ctrl-r` rename · `ctrl-v` select (the search stays, to pick several) · `ctrl-t` new gwm worktree · `ctrl-y` copy the resume command · `ctrl-x` close, after a `y` |
@@ -144,6 +144,7 @@ It works like a command palette: you type, it finds. Each lane shows what its ag
 | `shift-tab` or `→` | Every action on what is under the cursor, each on one key (and `n` `e` to move); besides the ones above: `D` the branch's diff against its base · `M` move and go there · `a` new lane (claude, codex, hermes) · `i` interrupt · `R` restart on the same session |
 | `undo` | Type it: the command that puts the tabs of the last move back |
 | `tab` | The other view: Lanes, OpenTimeline |
+| `ctrl-f` | Lanes by workspace, or by state (working, idle, gone), remembered for the next time |
 | `esc` or `←` | Back: the actions, then the search, then the selection, then close (`ctrl-c` closes from anywhere) |
 | `?` | Every key (with the search empty) |
 

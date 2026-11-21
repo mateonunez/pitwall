@@ -11,7 +11,7 @@ The words pitwall uses, and only those.
   - `gone`: the agent exited; the window has a plain shell.
 - **Urgent**: an `asking` lane that has waited longer than `@pitwall-urgent-after` (ten minutes). Not a state of its own: a mark that clears when the lane moves on.
 - **Workspace**: a tmux session, holding the windows of one project or one kind of work. Moving a lane between workspaces moves its window; its agents keep running.
-- **Search**: what you type in the dashboard; every word must appear in a lane, a workspace, an action or a command. With a leading `/`, the text searched in the lanes' recent output.
+- **Search**: what you type in the dashboard; every word must appear in a lane, a workspace, an action or a command. Words that start an action's name (`rename`, `diff`, `move`) and words that find a lane suggest that action on that lane. With a leading `/`, the text searched in the lanes' recent output.
 - **Selection**: a set of lanes, kept as pane ids so it survives re-sorting. Actions apply to it when it is not empty, else to the lane under the cursor, and say which.
 - **Dashboard**: the popup on `prefix Space`: one palette for lanes, workspaces, actions and commands. With the search empty, the lanes waiting for you first, then every lane by workspace.
 - **Action**: something you can do with what is under the cursor, listed by `shift-tab`, each on one key; the most used also run with `ctrl` + their key, even mid-search.

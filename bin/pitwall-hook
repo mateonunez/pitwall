@@ -131,6 +131,14 @@ case $event in
     case $(json reason) in clear | logout | prompt_input_exit) forget ;; esac
     ;;
 esac
+# An ending session is not an ending agent: /clear, a resume, or Hermes reaping a session it left behind end one
+# while the program runs on. So gone only when the pane is back at a shell a moment later (## keeps tmux from
+# expanding the format now).
+if [ "$event" = SessionEnd ] && [ -z "${PITWALL_GONE_CHECKED:-}" ]; then
+  bin=$(cd "$(dirname "$0")" && pwd)
+  tmux run-shell -b "sleep 2; case \$(tmux display -p -t '$TMUX_PANE' '##{pane_current_command}' 2>/dev/null) in zsh | -zsh | bash | -bash | fish | sh | -sh | dash | login) printf '{\"session_id\":\"$sid\"}' | PITWALL_GONE_CHECKED=1 TMUX_PANE='$TMUX_PANE' '$bin/pitwall-hook' SessionEnd '$harness' ;; esac" >/dev/null 2>&1
+  exit 0
+fi
 [ "$current" = "$state" ] && exit 0
 
 viewers=$(tmux list-clients -f "#{==:#{window_id},$win}" -F '#{client_name}' 2>/dev/null)
