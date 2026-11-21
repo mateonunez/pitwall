@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/mateonunez/pitwall/compare/v0.2.0...v0.2.1) (2026-11-21)
+
+
+### Features
+
+* searchable actions, lanes by state, working lanes on the pills, and Hermes lanes that stay alive ([#18](https://github.com/mateonunez/pitwall/issues/18)) ([4719c2a](https://github.com/mateonunez/pitwall/commit/4719c2ab83d5684c8af58910a27701bd7749e7f9))
+
 ## [0.2.0](https://github.com/mateonunez/pitwall/compare/v0.1.10...v0.2.0) (2026-11-19)
 
 
