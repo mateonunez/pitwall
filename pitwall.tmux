@@ -67,9 +67,9 @@ if [ "$(opt @pitwall-layout inline)" = tabs ]; then
   MUTED='#9ca3af' DIM='#6b7280' TEXT='#f3f4f6' DARK='#0a0a0a' SEP='#4b5563'
   if [ "$(opt @pitwall-tab-caps on)" = on ]; then L='' R=''; else L=' ' R=' '; fi # Nerd Font half circles
   count() { printf '%s' "#{n:#{W:#{P:#{?#{==:$S,$1},x,}}}}"; }
-  A=$(count asking) D=$(count done)
+  A=$(count asking) D=$(count done) K=$(count working)
   # Room per tab: what the pills leave, shared by the windows, between 6 and 24 cells.
-  X='#{e|-:#{e|/:#{e|-:#{client_width},#{e|*:#{server_sessions},13}},#{session_windows}},7}'
+  X='#{e|-:#{e|/:#{e|-:#{client_width},#{e|*:#{server_sessions},16}},#{session_windows}},7}'
   tmux set -g @pitwall-tab-width "#{?#{e|<:$X,6},6,#{?#{e|>:$X,24},24,$X}}"
   NAME='#{=/#{E:@pitwall-tab-width}/…:window_name}'
   # The open workspace's tabs share an amber underline, as a Chrome tab group shares its colour; the current tab is
@@ -77,7 +77,7 @@ if [ "$(opt @pitwall-layout inline)" = tabs ]; then
   TAB_OFF="#[range=window|#{window_index}]#[fg=$DIM bg=$STRIP underscore us=$ASK] #{window_index} #{E:@pitwall-glyph}#[fg=$MUTED nobold]$NAME #[norange]"
   TAB_ON="#[range=window|#{window_index}]#[fg=$TABBG bg=$STRIP nounderscore]$L#[fg=$ASK bg=$TABBG bold underscore us=$ASK]#{window_index} #[fg=$DIM nobold]#{E:@pitwall-glyph}#[fg=$TEXT bold]$NAME#[fg=$TABBG bg=$STRIP nobold nounderscore]$R#[norange]"
   HERE="#[range=session|#{session_id}]#[fg=$ASK bg=$STRIP]$L#[fg=$DARK bg=$ASK bold]#{session_name}#[fg=$ASK bg=$STRIP nobold]$R#[norange]#{W:$TAB_OFF,$TAB_ON}#[nounderscore bg=$STRIP]   "
-  AWAY="#[range=session|#{session_id}]#[fg=$PILL bg=$STRIP]$L#[fg=$DIM bg=$PILL]#{session_name}#{?$A, #[fg=$ASK bold]◆$A#[nobold],}#{?$D, #[fg=$DONE bold]✓$D#[nobold],}#[fg=$PILL bg=$STRIP]$R#[norange]  "
+  AWAY="#[range=session|#{session_id}]#[fg=$PILL bg=$STRIP]$L#[fg=$DIM bg=$PILL]#{session_name}#{?$A, #[fg=$ASK bold]◆$A#[nobold],}#{?$D, #[fg=$DONE bold]✓$D#[nobold],}#{?$K, #[fg=$MUTED]#{?#{@pitwall_spin},#{@pitwall_spin},⠙}$K,}#[fg=$PILL bg=$STRIP]$R#[norange]  "
   RIGHT="#{?client_prefix,#[fg=$ASK bold]prefix#[nobold]  ,}#{?#{&&:#{@pitwall_restorable},#{!=:#{@pitwall_restorable},0}},#[fg=$ASK]↺ #{@pitwall_restorable}  ,}#{?#{&&:#{@pitwall_bell},#{!=:#{@pitwall_bell},0}},#[fg=$ASK bold]⚑ #{@pitwall_bell}#[nobold]  ,}"
   tmux set -g @pitwall-tabs-fmt "#[fill=$STRIP bg=$STRIP]#[align=left] #{S:#{?#{==:#{session_name},#{client_session}},$HERE,$AWAY}}#[align=right bg=$STRIP]$RIGHT"
   # The right side gives way as the pane narrows: everything, then cpu, memory and disk, then the clock alone.

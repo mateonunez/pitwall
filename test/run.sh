@@ -62,7 +62,7 @@ eq "a quota refresh with nothing to show exits 0" "$(TMUX="$SOCK,0,0" "$ROOT/bin
 $T set -gu @pitwall-codexbar
 
 hook "$P1" Notification '{"notification_type":"permission_prompt"}'; eq "permission Notification → asking" "$(state s:one)" asking
-hook "$P1" SessionEnd;        eq "SessionEnd → gone" "$(state s:one)" gone
+hook "$P1" SessionEnd; sleep 2.6; eq "SessionEnd, the pane back at its shell → gone" "$(state s:one)" gone
 
 $T set -pu -t "$P1" @pitwall_state \; select-pane -t "$P1" -T '⠙ Working on it | dir'
 eq "spinner in the title → working without hooks" "$(state s:one)" working
@@ -232,6 +232,8 @@ daemon cx-z "$FAKE/proj" PreToolUse codex
 eq "two Codex and no thread name to tell them apart: neither is touched" "$($T display -p -t "$CA" '#{@pitwall_state}')" ""
 echo "{\"session_id\":\"cl-1\",\"cwd\":\"$FAKE\"}" | TMUX="$SOCK,0,0" TMUX_PANE='' "$ROOT/bin/pitwall-hook" UserPromptSubmit claude
 eq "a Claude hook without tmux finds the one Claude in its directory" "$($T display -p -t "$CL" '#{@pitwall_state} #{@pitwall_name}')" "working $(basename "$FAKE")"
+echo '{"session_id":"cl-1","reason":"other"}' | TMUX="$SOCK,0,0" TMUX_PANE="$CL" "$ROOT/bin/pitwall-hook" SessionEnd claude; sleep 2.6
+eq "a session that ends while its agent runs on (a resume, a reaped session) is not gone" "$($T display -p -t "$CL" '#{@pitwall_state}')" working
 OC=$($T new-window -d -P -F '#{pane_id}' -t s: -n oc -c "$FAKE" "exec $FAKE/opencode 300"); sleep 0.3
 eq "other agents are lanes before any hook, opencode here" "$($T display -p -t "$OC" '#{E:@pitwall-state-fmt}')" idle
 $T kill-pane -t "$CA" \; kill-pane -t "$CB" \; kill-pane -t "$CL" \; kill-pane -t "$OC"
@@ -267,10 +269,13 @@ eq "and tmux its own first line" "$($T show -gv 'status-format[0]' | grep -c pit
 H=$(mktemp -d); ISOLATED="$ISOLATED $H"; mkdir -p "$H/.claude" "$H/.codex" "$H/.hermes"
 printf '# my notes\nmodel: x\n' >"$H/.hermes/config.yaml"
 HOME=$H HERMES_HOME= "$ROOT/bin/pitwall" install --write >/dev/null
-eq "install appends six Hermes hooks" "$(grep -c 'pitwall-hook .* hermes$' "$H/.hermes/config.yaml")" 6
+eq "install appends seven Hermes hooks, tool calls included" "$(grep -c 'pitwall-hook .* hermes$' "$H/.hermes/config.yaml")" 7
 eq "and keeps what was there, comments too" "$(head -2 "$H/.hermes/config.yaml" | tr '\n' ' ')" "# my notes model: x "
 HOME=$H HERMES_HOME= "$ROOT/bin/pitwall" install --write >/dev/null
-eq "a second install adds nothing" "$(grep -c '^hooks:' "$H/.hermes/config.yaml")" 1
+eq "a second install adds nothing" "$(grep -c '^hooks:' "$H/.hermes/config.yaml") $(grep -c 'pitwall-hook' "$H/.hermes/config.yaml")" "1 7"
+awk '!/post_tool_call/ { print } /post_tool_call/ { getline; getline }' "$H/.hermes/config.yaml" >"$H/old" && mv "$H/old" "$H/.hermes/config.yaml"
+HOME=$H HERMES_HOME= "$ROOT/bin/pitwall" install --write >/dev/null
+eq "an older install, its block last in the file, gets the tool-call hook added at the end" "$(grep -c 'pitwall-hook' "$H/.hermes/config.yaml") $(tail -3 "$H/.hermes/config.yaml" | head -1)" "7   post_tool_call:"
 printf 'hooks:\n  pre_tool_call: []\n' >"$H/.hermes/config.yaml"
 eq "a config with its own hooks: block is left alone, the lines printed" "$(HOME=$H HERMES_HOME= "$ROOT/bin/pitwall" install --write | grep -c 'add these under it')$(grep -c pitwall "$H/.hermes/config.yaml")" 10
 
@@ -324,10 +329,14 @@ until_screen 'answered 1 to alpha' && eq "1 answers the lane that asks, typed in
 $B send-keys -t lab:alpha C-u
 keys C-n
 eq "down skips the task line, to the next lane" "$(screen | grep '▌' | grep -cE '[○◆✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] ')" 1
+keys C-f
+until_screen '^ *WORKING' && eq "ctrl-f groups the lanes by state" "$(screen | grep -cE '^ *(WORKING|IDLE) *│')$(screen | grep -cE '^ *LAB *│')" 20
+keys C-f
+until_screen '^ *LAB ' && eq "and again by workspace, remembered for the next opening" "$($B show -gv @pitwall_dash_group)" workspace
 keys Tab
-until_screen 'OPENTIMELINE IS NOT ANSWERING' && eq "shift-tab opens OpenTimeline, which says when its server does not answer, and what to do" "$(screen | grep -c 'Try again\|Open the OpenTimeline repo')" 2
+until_screen 'OPENTIMELINE IS NOT ANSWERING' && eq "tab opens OpenTimeline, which says when its server does not answer, and what to do" "$(screen | grep -c 'Try again\|Open the OpenTimeline repo')" 2
 keys Tab
-until_screen 'WAITING FOR YOU' && eq "and shift-tab comes back to the lanes" "$(lanes_shown)" 4
+until_screen 'WAITING FOR YOU' && eq "and tab comes back to the lanes" "$(lanes_shown)" 4
 
 keys -l alpha; keys BTab
 until_screen 'ACTIONS ON ALPHA' && keys -l v
@@ -363,6 +372,9 @@ keys -l undo
 until_screen 'Undo the last move (2 tabs back)' && keys Enter
 sleep 0.8
 eq "u puts the tabs of the last move back" "$($B list-windows -t '=lab' -F '#W' | sort | tr '\n' ' ')" "alpha beta gam2 "
+keys -l 'rename del'
+until_screen 'SUGGESTED' && eq "actions are searchable: «rename del» offers renaming delta first" "$(screen | grep '▌' | grep -c 'Rename tab · delta')" 1
+esc
 D=$($B display -p -t oss:delta '#{pane_id}')
 keys -l delta; keys BTab; keys -l x
 until_screen 'close DELTA' && keys -l y

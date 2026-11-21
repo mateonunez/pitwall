@@ -37,11 +37,11 @@ EOF
 }
 
 # One row per lane (a pane running an agent), tab-separated, ordered by what needs you:
-# rank state session window pane-id since harness title transcript session-id. A window with several panes names them window.N.
+# rank state session window pane-id since harness title transcript session-id urgent folder. A window with several panes names them window.N.
 lanes() {
   fmt=$(tmux show -gqv @pitwall-state-fmt)
   [ -n "$fmt" ] || { echo "pitwall: not loaded in this tmux server (run pitwall.tmux)" >&2; exit 1; }
-  tmux list-panes -a -F "#{E:@pitwall-state-fmt}	#{session_name}	#{window_name}#{?#{>:#{window_panes},1},.#{pane_index},}	#{pane_id}	#{@pitwall_since}	#{?#{@pitwall_harness},#{@pitwall_harness},#{?#{==:#{pane_current_command},codex},codex,#{?#{m/r:^(claude|[0-9.]+)$,#{pane_current_command}},claude,}}}	#{pane_title}	#{@pitwall_transcript}	#{@pitwall_session}	#{?#{@pitwall_urgent},urgent,-}" |
+  tmux list-panes -a -F "#{E:@pitwall-state-fmt}	#{session_name}	#{window_name}#{?#{>:#{window_panes},1},.#{pane_index},}	#{pane_id}	#{@pitwall_since}	#{?#{@pitwall_harness},#{@pitwall_harness},#{?#{==:#{pane_current_command},codex},codex,#{?#{m/r:^(claude|[0-9.]+)$,#{pane_current_command}},claude,}}}	#{pane_title}	#{@pitwall_transcript}	#{@pitwall_session}	#{?#{@pitwall_urgent},urgent,-}	#{pane_current_path}" |
     awk -F '\t' 'BEGIN { OFS = "\t"; split("asking done working idle gone", o, " "); for (i in o) rank[o[i]] = i }
       $1 != "" {
         t = $7; sub(/^\[ [^]]* \] Action Required \| /, "", t)  # Codex waiting for you (it blinks "[ ! ]" / "[ . ]")
@@ -474,13 +474,32 @@ EOF
 
 # Hermes keeps its hooks in YAML next to the rest of its config, with comments worth keeping: the block is
 # appended as text, never rewritten. A config that already has a hooks: block gets the lines to paste instead.
-# Hermes events, mapped onto the hook's: a turn starts (pre_llm_call), waits on a person (approval, a question,
-# sudo), resumes, ends (on_session_end fires once per turn), and the session closes (on_session_finalize).
-HERMES_EVENTS='on_session_open:SessionStart pre_llm_call:UserPromptSubmit on_human_input_request:PermissionRequest on_human_input_resolved:PostToolUse on_session_end:Stop on_session_finalize:SessionEnd'
+# Hermes events, mapped onto the hook's: a turn starts (pre_llm_call, once per turn), each tool call (post_tool_call)
+# keeps it working, waits on a person (approval, a question, sudo), resumes, ends (on_session_end fires once per
+# turn), and a session closes (on_session_finalize, also when Hermes reaps one it left behind: the hook then checks
+# the agent really exited).
+HERMES_EVENTS='on_session_open:SessionStart pre_llm_call:UserPromptSubmit post_tool_call:PostToolUse on_human_input_request:PermissionRequest on_human_input_resolved:PostToolUse on_session_end:Stop on_session_finalize:SessionEnd'
 install_hermes() {
   file=${HERMES_HOME:-$HOME/.hermes}/config.yaml
   [ -f "$file" ] || return 0 # no Hermes here
-  if grep -q pitwall-hook "$file"; then echo "hermes: hooks already installed in $file"; return 0; fi
+  if grep -q pitwall-hook "$file"; then
+    # An older install: events added since go at the end, when pitwall's block is still the last thing in the file.
+    missing=''
+    for m in $HERMES_EVENTS; do grep -q "pitwall-hook ${m#*:} hermes" "$file" && grep -q "^  ${m%%:*}:" "$file" || missing="$missing $m"; done
+    [ -n "$missing" ] || { echo "hermes: hooks already installed in $file"; return 0; }
+    lines=''
+    for m in $missing; do lines="$lines
+  ${m%%:*}:
+    - command: $HOOK ${m#*:} hermes
+      timeout: 5"; done
+    if [ "${1:-}" = --write ] && awk '/^# pitwall: lane states in tmux/ { p = 1; next } p && /^hooks:/ { next } p && /^[^ #]/ { bad = 1 } END { exit !(p && !bad) }' "$file"; then
+      cp -p "$file" "$file.bak-pitwall" && printf '%s\n' "${lines#?}" >>"$file"
+      echo "hermes: added$(for m in $missing; do printf ' %s' "${m%%:*}"; done) to $file (backup: $file.bak-pitwall); Hermes asks you to approve each new hook once"
+    else
+      echo "hermes: add these under hooks: in $file:"; printf '%s\n' "${lines#?}"
+    fi
+    return 0
+  fi
   block="# pitwall: lane states in tmux (pitwall install)
 hooks:"
   for m in $HERMES_EVENTS; do
@@ -510,7 +529,7 @@ cmd_doctor() {
   check "Claude Code hooks" 'grep -q pitwall-hook "$HOME/.claude/settings.json" 2>/dev/null' "pitwall install --write"
   check "Codex hooks" 'grep -q pitwall-hook "$HOME/.codex/hooks.json" 2>/dev/null' "pitwall install --write"
   [ -f "${HERMES_HOME:-$HOME/.hermes}/config.yaml" ] &&
-    check "Hermes hooks" 'grep -q pitwall-hook "${HERMES_HOME:-$HOME/.hermes}/config.yaml"' "pitwall install --write"
+    check "Hermes hooks, tool calls included" 'grep -q "pitwall-hook PostToolUse hermes" "${HERMES_HOME:-$HOME/.hermes}/config.yaml" && grep -q "^  post_tool_call:" "${HERMES_HOME:-$HOME/.hermes}/config.yaml"' "pitwall install --write"
   check "python3 (only for install)" 'command -v python3 >/dev/null'
   return $ok
 }
@@ -604,7 +623,8 @@ In tmux (prefix, then)       also listed by tmux's own help, prefix ?
   $(printf '%-6s' "$(k restore | grep . || echo R)") restore the lanes a dead tmux took with it
 
 In the dashboard             ? (with the search empty) shows these there too
-  type             find lanes, workspaces, actions and commands; //text searches the lanes' output
+  type             find lanes, workspaces, actions and commands; «rename ait» puts that action first
+                   //text searches the lanes' output
   ctrl-n ctrl-e    down, up (the arrows too)
   ⏎                go to the lane · switch to the workspace · open the story · run the action
   1 2 3            answer the lane under the cursor when it asks (search empty)
@@ -614,6 +634,7 @@ In the dashboard             ? (with the search empty) shows these there too
   shift-tab  →     every action on what is under the cursor, one key each (D branch diff · M move and go · a new lane
                    · i interrupt · R restart, and the ones above)
   tab              the other view: Lanes, OpenTimeline
+  ctrl-f           lanes by workspace, or by state; remembered
   esc  ←           back: the actions, then the search, then the selection, then close (ctrl-c closes)
 EOF
     ;;
