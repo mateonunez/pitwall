@@ -17,6 +17,12 @@ Where pitwall goes next, and the rules it keeps on the way.
 - **Needs you, beyond the terminal.** `lane.state` signals to [OpenTimeline](https://github.com/mateonunez/opentimeline) through a system seat, with the lane's metrics; the credential renews itself.
 - **The dashboard** (`prefix Space`): one palette for lanes, workspaces, actions and commands, replacing the board, the workspace picker and the menu. Move, move and go, rename tabs and workspaces, select, new lane or gwm worktree, diff in lumen, close.
 - **The dashboard, second round.** Answer an asking lane with `1` `2` `3`; each lane's task under it; branch, changes and a context bar in the preview; read the whole output, write to the agent, the worktree's or the branch's diff, nvim, lazygit, the PR, interrupt, restart, copy the resume command, undo a move, the most used on `ctrl` keys that work mid-search. An OpenTimeline view (`tab`): stories by project, linked to their lanes, and a way out when the server is down.
+- **Questions and selections.** An asking lane's question on its row and in its toast; close, interrupt, restart, write to or rename a whole selection (`select idle` picks them).
+- **Workspace recipes.** `pitwall up` brings a workspace back from a small TOML file (tabs, agents resumed, servers, nvim, gwm worktrees), only what is missing; `--save` writes one from an open workspace; `up` in the dashboard.
+- **A skill for agents.** `skills/pitwall/SKILL.md`, linked by `pitwall install`: an orchestrator reads `ls --json` (questions included) and `peek`, reports like a pit wall, and acts with `answer` / `send` only after a yes.
+- **Usage.** A third dashboard view: limits with bars, resets and the week's pace; today per lane (working, waited on you, tokens) from a local ledger the hook keeps; cpu and memory sparklines. `pitwall stats --today`.
+- **Lanes in Neovim.** The repo is a Neovim plugin: `:Pitwall` picks a lane (Telescope, its screen as preview; go, open its folder, answer), `:PitwallCd`, and a statusline count.
+- **Recipes that keep up.** A recipe written by `--save` follows its workspace (tabs opened, closed, renamed, new agent sessions) until edited by hand.
 - **The board as a manager** (now inside the dashboard). Filter (`/`), output search (`//`), workspace scope (`w`), views by state, by workspace or one row per workspace (`g`), sort (`s`), help (`?`), and a selection with tested rules (`v`, `V`, `m`).
 - **Workspaces.** tmux sessions as workspaces, managed from the dashboard, `pitwall move`, other workspaces that need you in the status line.
 - **Urgent after a while, and the bell.** A lane asking for ten minutes turns red and is sent as `urgent`; Needs you's count can sit in the status line.
@@ -28,15 +34,8 @@ Where pitwall goes next, and the rules it keeps on the way.
 
 | Step | Ships | Done when |
 | --- | --- | --- |
-| **Workspace recipes** | `pitwall up <name>` raises a workspace (tabs, agents, nvim) from a small file | A morning starts with one command |
-| **Lanes in nvim** | A picker fed by `pitwall ls --json`; open nvim in a lane's worktree | Editing and agents meet without leaving nvim |
-| **Group actions, past moving** | Close or rename a selection, with the same rules: counted, named, cleared | Tidying ten lanes takes one selection |
 | **Workspaces, fuller** | A working directory and a note per workspace; close from the picker | A workspace is a place, not just a name |
 | **Saved lanes, one by one** | Closed and restorable lanes in their own section; restore or forget one | Coming back after a crash is a list, not a command |
-| **Metrics over time** | A small per-session ledger (turns, tokens, time asking versus working) so `pitwall stats --today` answers where the day went | You see which lanes cost the most and which waited on you the longest |
-| **Why a lane asks** | The question itself on the lane's row and its tab, not only its task | You know what it asks before you look |
-| **Usage view** | A third view: usage limits with bars and the week's pace, tokens per lane today, the machine's numbers over time | You see where the quota goes |
-| **A skill for agents** | `skills/pitwall/SKILL.md`, so an orchestrator learns `pitwall ls`, refs and `peek` | An agent reads the fleet and asks before acting |
 
 ## Open questions
 

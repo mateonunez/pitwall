@@ -15,6 +15,8 @@ pitwall: see and steer coding agents from tmux
   pitwall ls [--json]       every lane, the ones that need you first, with a ref (@1, @2…)
   pitwall peek @N [lines]   the last lines of a lane
   pitwall go @N             jump to a lane
+  pitwall answer @N <1|2|3>  answer a lane that asks (one key, never to a lane that works)
+  pitwall send @N <text>    write to a lane's agent and send it
   pitwall next              jump to the next lane that is asking or done (cycles)
   pitwall dash              the dashboard (prefix Space opens it in a popup); board is the old name
   pitwall stats [@N]        model, context and tokens per lane, from the agents' transcripts
@@ -27,6 +29,7 @@ pitwall: see and steer coding agents from tmux
   pitwall ot connect <token> [--url URL]      send lane states to OpenTimeline (status, flush, disconnect)
   pitwall ot bell <person-token>              Needs you's count in the status line (off to stop)
   pitwall ws [new|go|rename|close] …          workspaces (tmux sessions): list them, or manage one
+  pitwall up [name] [--dry] · --list · --save [ws]  a workspace from a small file: tabs, agents, servers, nvim
   pitwall move <@N|window> <workspace>        move a lane's window, agents still running, to a workspace
   pitwall install [--write] show (or add) the hook lines for Claude Code and Codex
   pitwall doctor            what is missing; exits 1 when something is
@@ -37,11 +40,11 @@ EOF
 }
 
 # One row per lane (a pane running an agent), tab-separated, ordered by what needs you:
-# rank state session window pane-id since harness title transcript session-id urgent folder. A window with several panes names them window.N.
+# rank state session window pane-id since harness title transcript session-id urgent folder question choices. A window with several panes names them window.N.
 lanes() {
   fmt=$(tmux show -gqv @pitwall-state-fmt)
   [ -n "$fmt" ] || { echo "pitwall: not loaded in this tmux server (run pitwall.tmux)" >&2; exit 1; }
-  tmux list-panes -a -F "#{E:@pitwall-state-fmt}	#{session_name}	#{window_name}#{?#{>:#{window_panes},1},.#{pane_index},}	#{pane_id}	#{@pitwall_since}	#{?#{@pitwall_harness},#{@pitwall_harness},#{?#{==:#{pane_current_command},codex},codex,#{?#{m/r:^(claude|[0-9.]+)$,#{pane_current_command}},claude,}}}	#{pane_title}	#{@pitwall_transcript}	#{@pitwall_session}	#{?#{@pitwall_urgent},urgent,-}	#{pane_current_path}" |
+  tmux list-panes -a -F "#{E:@pitwall-state-fmt}	#{session_name}	#{window_name}#{?#{>:#{window_panes},1},.#{pane_index},}	#{pane_id}	#{@pitwall_since}	#{?#{@pitwall_harness},#{@pitwall_harness},#{?#{==:#{pane_current_command},codex},codex,#{?#{m/r:^(claude|[0-9.]+)$,#{pane_current_command}},claude,}}}	#{pane_title}	#{@pitwall_transcript}	#{@pitwall_session}	#{?#{@pitwall_urgent},urgent,-}	#{pane_current_path}	#{@pitwall_question}	#{@pitwall_choices}" |
     awk -F '\t' 'BEGIN { OFS = "\t"; split("asking done working idle gone", o, " "); for (i in o) rank[o[i]] = i }
       $1 != "" {
         t = $7; sub(/^\[ [^]]* \] Action Required \| /, "", t)  # Codex waiting for you (it blinks "[ ! ]" / "[ . ]")
@@ -67,9 +70,9 @@ cmd_ls() {
     {
       t = $8
       if (json == "--json")
-        printf "%s{\"ref\":\"@%d\",\"state\":%s,\"session\":%s,\"window\":%s,\"id\":%s,\"since\":%s,\"harness\":%s,\"task\":%s}", (NR > 1 ? ",\n " : "[\n "), NR, q($2), q($3), q($4), q($5), ($6 == "" ? "null" : $6), q($7), q(t)
+        printf "%s{\"ref\":\"@%d\",\"state\":%s,\"session\":%s,\"window\":%s,\"id\":%s,\"since\":%s,\"harness\":%s,\"task\":%s,\"urgent\":%s,\"folder\":%s,\"question\":%s,\"choices\":%s}", (NR > 1 ? ",\n " : "[\n "), NR, q($2), q($3), q($4), q($5), ($6 == "" ? "null" : $6), q($7), q(t), ($11 == "urgent" ? "true" : "false"), q($12), ($13 == "" ? "null" : q($13)), ($14 == "" ? "null" : q($14))
       else
-        printf "@%-2d %-22s %-8s %4s  %-7s %s\n", NR, $3 "/" $4, $2, age($6), $7, t
+        printf "@%-2d %-22s %-8s %4s  %-7s %s\n", NR, $3 "/" $4, $2, age($6), $7, ($2 == "asking" && $13 != "" ? $13 "  " $14 : t)
     }
     END { if (json == "--json") print (NR ? "\n]" : "[]") }'
 }
@@ -83,6 +86,24 @@ cmd_peek() {
 jump() { tmux switch-client -t "$1" \; select-window -t "$1" \; select-pane -t "$1"; }
 
 cmd_go() { jump "$(resolve "${1:?usage: pitwall go @N}")"; }
+
+# answer @N <1|2|3|…>: one key to a lane that is asking, as if typed there; never to a lane that works.
+cmd_answer() {
+  pane=$(resolve "${1:?usage: pitwall answer @N <1|2|3>}"); key=${2:?usage: pitwall answer @N <1|2|3>}
+  case $key in [0-9] | y | n | Y | N) ;; *) echo "pitwall answer: one of the numbered answers (1, 2, 3…), or y / n" >&2; exit 1 ;; esac
+  [ "$(tmux display -p -t "$pane" '#{@pitwall_state}')" = asking ] || { echo "pitwall answer: $1 is not asking" >&2; exit 1; }
+  tmux send-keys -t "$pane" "$key"
+  echo "answered $key to $1"
+}
+
+# send @N <message>: a message typed into a lane's agent and sent, as in the dashboard (ctrl-s); not to a lane gone.
+cmd_send() {
+  pane=$(resolve "${1:?usage: pitwall send @N <message>}"); shift
+  [ $# -gt 0 ] || { echo "usage: pitwall send @N <message>" >&2; exit 1; }
+  [ "$(tmux display -p -t "$pane" '#{@pitwall_state}')" = gone ] && { echo "pitwall send: its agent has gone" >&2; exit 1; }
+  tmux send-keys -t "$pane" -l -- "$*" && tmux send-keys -t "$pane" Enter
+  echo "sent to $1"
+}
 
 # Visiting a window: its panes that finished while you were away become idle (the tmux hook calls this).
 cmd_seen() {
@@ -108,14 +129,30 @@ cmd_next() {
 # --- metrics -----------------------------------------------------------------------------------------------
 
 # stats [@N]: model, context use and tokens for each lane (or one), read from the transcript each hook recorded.
+# stats --today: per lane, today's time working and time asking (waiting on you), from the hook's ledger.
+stats_today() {
+  f=$STATE/ledger/$(date +%F)
+  [ -f "$f" ] || { [ "${1:-}" = --plain ] || echo "no ledger for today yet: it starts with the next state change"; return 0; }
+  awk -F '\t' -v now="$(date +%s)" -v plain="${1:-}" '
+    { if ($2 in at) { d = $1 - at[$2]; if (st[$2] == "working") w[$2] += d; else if (st[$2] == "asking") a[$2] += d }
+      at[$2] = $1; st[$2] = $5; name[$2] = $4 }
+    END {
+      for (p in at) { d = now - at[p]; if (st[p] == "working") w[p] += d; else if (st[p] == "asking") a[p] += d }
+      if (plain != "--plain") printf "%-22s %9s %9s\n", "LANE", "WORKING", "ASKING"
+      for (p in at) if (plain == "--plain") printf "%s\t%s\t%d\t%d\n", p, name[p], w[p], a[p]
+        else printf "%-22s %8dm %8dm\n", name[p], w[p] / 60, a[p] / 60
+    }' "$f"
+}
+
 cmd_stats() {
+  case ${1:-} in --today) shift; stats_today "$@"; return ;; esac
   rows=$(lanes)
   [ -n "${1:-}" ] && rows=$(printf '%s\n' "$rows" | awk -v n="${1#@}" 'NR == n')
   US=$(printf '\037') # not a tab: `read` merges consecutive tabs, so an empty field would shift the rest
   printf '%s\n' "$rows" | awk 'NF' | tr '\t' '\037' | while IFS="$US" read -r _ state session window _ _ harness _ transcript sid _; do
     printf '%s\t%s\t%s\t%s\n' "$session/$window" "$state" "$harness" "$("$DIR/bin/pitwall-stats" "$harness" "$transcript" "$sid")"
-  done | awk -F '\t' 'BEGIN { printf "%-22s %-8s %-7s %-22s %6s %9s %9s\n", "LANE", "STATE", "AGENT", "MODEL", "CTX", "TOKENS", "OUT" }
-    { printf "%-22s %-8s %-7s %-22s %6s %9s %9s\n", $1, $2, $3, ($4 == "" ? "—" : $4), ($5 == "" ? "—" : $5 "%"), ($8 == "" ? "—" : $8), ($9 == "" ? "—" : $9) }'
+  done | awk -F '\t' 'BEGIN { printf "%-22s %-8s %-7s %-18s %5s %9s %9s %10s %6s\n", "LANE", "STATE", "AGENT", "MODEL", "CTX", "TOKENS", "OUT", "COST", "TURNS" }
+    { printf "%-22s %-8s %-7s %-18s %5s %9s %9s %10s %6s\n", $1, $2, $3, ($4 == "" ? "-" : $4), ($5 == "" ? "-" : $5 "%"), ($8 == "" ? "-" : $8), ($9 == "" ? "-" : $9), ($14 == "" ? "-" : "$" $14), ($15 == "" ? "-" : $15) }'
 }
 
 # quota [--refresh]: CodexBar's usage limits, rendered once into @pitwall_quota for the status line and the dashboard.
@@ -128,7 +165,8 @@ cmd_quota() {
   "$bar" usage --format json --provider both 2>/dev/null | "$DIR/bin/pitwall-quota" | {
     IFS= read -r fmt || true # nothing from CodexBar is not a failure
     IFS= read -r plain || true
-    if [ -n "$plain" ]; then tmux set -g @pitwall_quota "$fmt" \; set -g @pitwall_quota_plain "$plain"; fi
+    IFS= read -r data || true
+    if [ -n "$plain" ]; then tmux set -g @pitwall_quota "$fmt" \; set -g @pitwall_quota_plain "$plain" \; set -g @pitwall_quota_data "$data"; fi
   }
 }
 
@@ -276,6 +314,55 @@ cmd_ot() {
 }
 
 # _escalate <pane> <since>: the hook's ten-minute check. Still asking since then: red in tmux, urgent in OpenTimeline.
+# _question <pane> <since>: what a lane that asks is asking, read once from its screen (never the transcript), kept on
+# the pane as @pitwall_question and @pitwall_choices until it moves on. "Do you want to proceed?" under a command
+# becomes "Allow <command>?"; the numbered answers become "1 Yes · 2 No". Prints both, tab-separated.
+question_of() { # question_of: the screen on stdin → question <tab> choices
+  sed 's/[│╭╮╰╯]//g; s/^[[:space:]]*//; s/[[:space:]]*$//' | awk 'NF { l[++n] = $0 }
+    END {
+      for (i = n; i > 0 && i > n - 30; i--) if (l[i] ~ /\?/ && l[i] !~ /^[0-9]\./ && l[i] !~ /^(❯|›|>) *[0-9]\./) { qi = i; break }
+      if (!qi) exit
+      q = l[qi]; rest = ""
+      if (match(q, /\? +/)) { rest = substr(q, RSTART + RLENGTH); q = substr(q, 1, RSTART) }
+      ch = ""
+      if (rest != "") { gsub(/[❯›>]/, "", rest); while (match(rest, /[0-9]\. *[^0-9]+/)) { o = substr(rest, RSTART, RLENGTH); rest = substr(rest, RSTART + RLENGTH); gsub(/\. +/, " ", o); gsub(/ +$/, "", o); ch = ch (ch == "" ? "" : " · ") o } }
+      for (i = qi + 1; i <= n && i <= qi + 6; i++) {
+        o = l[i]; sub(/^(❯|›|>) */, "", o)
+        if (o ~ /^[0-9]\. /) {
+          sub(/\. +/, " ", o)
+          if (o ~ /ask again|always/) { sub(/ .*/, " Yes, always", o) } else { sub(/,? and .*/, "", o); sub(/ \(.*/, "", o) }
+          if (length(o) > 18) o = substr(o, 1, 17) "…"
+          ch = ch (ch == "" ? "" : " · ") o
+        }
+      }
+      cmd = ""
+      for (i = qi - 1; i > 0 && i >= qi - 12; i--) {
+        if (l[i] ~ /^\$ /) { cmd = substr(l[i], 3); break }
+        if (match(l[i], /(Bash|Run|Shell)\(.*\)/)) { cmd = substr(l[i], RSTART, RLENGTH); sub(/^[A-Za-z]+\(/, "", cmd); sub(/\)$/, "", cmd); break }
+        if (l[i] ~ /^(Bash command|Run command|Command)$/ && i + 1 < qi) { cmd = l[i + 1]; break }
+      }
+      if (cmd != "" && q ~ /^(Do you want to proceed|Allow command|Would you like to run|Do you want to run|Run this command)/) q = "Allow " cmd "?"
+      gsub(/\t/, " ", q)
+      if (length(q) > 100) q = substr(q, 1, 99) "…"
+      printf "%s\t%s\n", q, ch
+    }'
+}
+cmd__question() {
+  pane=$1 since=$2
+  [ "$(tmux display -p -t "$pane" '#{@pitwall_state} #{@pitwall_since}' 2>/dev/null)" = "asking $since" ] || return 0
+  out=$(tmux capture-pane -p -J -t "$pane" -S -60 2>/dev/null | question_of)
+  [ -n "$out" ] || return 0
+  q=${out%%"$TAB"*} ch=${out#*"$TAB"}
+  tmux set -p -t "$pane" @pitwall_question "$q" \; set -p -t "$pane" @pitwall_choices "$ch" 2>/dev/null
+  [ "$(tmux show -gqv @pitwall-toast)" = off ] && return 0
+  win=$(tmux display -p -t "$pane" '#{window_id}') name=$(tmux display -p -t "$pane" '#{window_name}#{?#{>:#{window_panes},1},.#{pane_index},}')
+  viewers=$(tmux list-clients -f "#{==:#{window_id},$win}" -F '#{client_name}' 2>/dev/null)
+  for c in $(tmux list-clients -F '#{client_name}' 2>/dev/null); do
+    case " $(echo $viewers) " in *" $c "*) ;; *) tmux display-message -c "$c" -d 4000 "◆ $name: $q" 2>/dev/null ;; esac
+  done
+  return 0
+}
+
 cmd__escalate() {
   pane=$1 since=$2
   [ "$(tmux display -p -t "$pane" '#{@pitwall_state} #{@pitwall_since}' 2>/dev/null)" = "asking $since" ] || return 0
@@ -469,6 +556,7 @@ else:
 EOF
   done
   install_hermes "$write"
+  install_skill "$write"
   [ "$write" = --write ] || echo "run 'pitwall install --write' to add them; restart the agents to pick them up"
 }
 
@@ -520,6 +608,272 @@ hooks:"
   fi
 }
 
+# --- workspaces from a file: pitwall up -----------------------------------------------------------------------
+
+# A recipe is a small TOML file: top-level workspace (and name, dir), then [[tab]] tables (name, dir, agent, run,
+# worktree, fresh), [[tab.pane]] for more panes in the last tab, [[include]] for another project's recipe. It lives
+# in a repo (.pitwall.toml) or in ~/.config/pitwall/up/<name>.toml. Read here, in awk: no TOML library needed.
+UPDIR=${XDG_CONFIG_HOME:-$HOME/.config}/pitwall/up
+
+up_parse() { # up_parse <file> → rows: T name dir agent run worktree fresh session · P agent run session · I path · W name workspace dir
+  awk '
+    function val(s,   out, c) {
+      sub(/^[ \t]*/, "", s)
+      if (substr(s, 1, 1) != "\"") { sub(/[ \t]*#.*$/, "", s); sub(/[ \t]*$/, "", s); return s }
+      s = substr(s, 2); out = ""
+      while (length(s)) {
+        c = substr(s, 1, 1)
+        if (c == "\\") { out = out substr(s, 2, 1); s = substr(s, 3); continue }
+        if (c == "\"") break
+        out = out c; s = substr(s, 2)
+      }
+      return out
+    }
+    function flush() {
+      if (sec == "tab") printf "T\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", t["name"], t["dir"], t["agent"], t["run"], t["worktree"], t["fresh"], t["session"]
+      else if (sec == "pane") printf "P\t%s\t%s\t%s\n", t["agent"], t["run"], t["session"]
+      else if (sec == "include") printf "I\t%s\n", t["path"]
+      split("", t)
+    }
+    { line = $0 }
+    line ~ /^[ \t]*(#|$)/ { next }
+    line ~ /^[ \t]*\[\[/ {
+      flush()
+      h = line; sub(/^[ \t]*\[\[[ \t]*/, "", h); name = h; sub(/[ \t]*\]\].*$/, "", name)
+      sec = (name == "tab" ? "tab" : name == "tab.pane" ? "pane" : name == "include" ? "include" : "other")
+      if (sec == "pane") { printf "%s", "" }
+      line = h; sub(/^[^\]]*\]\][ \t]*/, "", line) # a key may follow on the same line
+      if (line == "" || line ~ /^#/) next
+    }
+    match(line, /^[ \t]*[A-Za-z_]+[ \t]*=/) {
+      k = substr(line, RSTART, RLENGTH); sub(/[ \t]*=$/, "", k); sub(/^[ \t]*/, "", k)
+      v = val(substr(line, RSTART + RLENGTH))
+      if (sec == "") top[k] = v; else t[k] = v
+    }
+    END { flush(); printf "W\t%s\t%s\t%s\n", top["name"], top["workspace"], top["dir"] }
+  ' "$1"
+}
+
+up_find() { # up_find [name | file | folder] → the recipe's path
+  a=${1:-}
+  if [ -z "$a" ]; then
+    for d in "$PWD" "$(git rev-parse --show-toplevel 2>/dev/null)"; do [ -n "$d" ] && [ -f "$d/.pitwall.toml" ] && { echo "$d/.pitwall.toml"; return; }; done
+    return 1
+  fi
+  a=$(printf '%s' "$a" | sed "s|^~|$HOME|")
+  [ -f "$a" ] && { (cd "$(dirname "$a")" && printf '%s/%s\n' "$(pwd)" "$(basename "$a")"); return; }
+  [ -f "$a/.pitwall.toml" ] && { (cd "$a" && printf '%s/.pitwall.toml\n' "$(pwd)"); return; }
+  [ -f "$UPDIR/$a.toml" ] && { echo "$UPDIR/$a.toml"; return; }
+  [ -f "$UPDIR/$a.link" ] && [ -f "$(cat "$UPDIR/$a.link")" ] && { cat "$UPDIR/$a.link"; return; }
+  return 1
+}
+
+up_name() { # up_name <file>: its name = top-level name, else the folder of a repo's .pitwall.toml, else the file's name
+  n=$(up_parse "$1" | awk -F '\t' '$1 == "W" { print $2 }')
+  [ -n "$n" ] && { echo "$n"; return; }
+  case $1 in */.pitwall.toml) basename "$(dirname "$1")" ;; *) basename "$1" .toml ;; esac
+}
+
+# A recipe from a repo runs commands: the first time (and after it changes) it asks, once. Yours, in ~/.config, never.
+up_trust() { # up_trust <file> [--yes]
+  case $1 in "$UPDIR"/*) return 0 ;; esac
+  sum=$( (shasum -a 256 "$1" 2>/dev/null || sha256sum "$1") | cut -c1-64)
+  [ -f "$STATE/up-trusted" ] && grep -qx "$sum $1" "$STATE/up-trusted" && return 0
+  if [ "${2:-}" != --yes ]; then
+    { : </dev/tty; } 2>/dev/null || { echo "pitwall up: $1 is new or changed; run it once from a terminal, or with --yes" >&2; return 1; }
+    printf 'run what %s says? [y/N] ' "$1" >/dev/tty; read -r ok </dev/tty
+    case $ok in y | Y | yes) ;; *) return 1 ;; esac
+  fi
+  mkdir -p "$STATE" && grep -v " $1\$" "$STATE/up-trusted" 2>/dev/null >"$STATE/up-trusted.new"; echo "$sum $1" >>"$STATE/up-trusted.new"
+  mv -f "$STATE/up-trusted.new" "$STATE/up-trusted"
+}
+
+up_agent() { # up_agent <agent> <dir> <fresh> [session] → the command that starts it: that session (saved by --save),
+  # else its last one in that folder, resumed; a new one with fresh = true or when there is none
+  [ "$3" = true ] && { echo "$1"; return; }
+  [ -n "${4:-}" ] && resume_cmd "$1" "$4" && return
+  phys=$(cd "$2" 2>/dev/null && pwd -P || echo "$2")
+  running=$(tmux list-panes -a -F '#{@pitwall_session}' 2>/dev/null || true)
+  sid=$(records | awk -F '\t' -v h="$1" -v d="$2" -v p="$phys" '$1 == h && ($3 == d || $3 == p) { print $9 "\t" $2 }' | sort -rn | cut -f2 |
+    while read -r s; do printf '%s\n' "$running" | grep -qx "$s" || { echo "$s"; break; }; done)
+  [ -n "$sid" ] && resume_cmd "$1" "$sid" && return
+  echo "$1"
+}
+
+up_run() { # up_run <file> <dry> [workspace]: bring the recipe up; what is there stays, what is missing comes back
+  file=$1 dry=$2 base=$(cd "$(dirname "$1")" && pwd)
+  rows=$(up_parse "$file")
+  w=$(printf '%s\n' "$rows" | awk -F '\t' '$1 == "W"')
+  ws=${3:-$(printf '%s' "$w" | cut -f3)}
+  [ -n "$ws" ] || ws=$(up_name "$file")
+  wsdir=$(printf '%s' "$w" | cut -f4 | sed "s|^~|$HOME|")
+  case $wsdir in '') wsdir=$base ;; /*) ;; *) wsdir=$base/$wsdir ;; esac
+  spare=''
+  if ! tmux has-session -t "=$ws" 2>/dev/null; then
+    if [ -n "$dry" ]; then echo "+ $ws  would make the workspace"
+    else spare=$(tmux new-session -d -P -F '#{window_id}' -s "$ws" -c "$wsdir") && printf '✓ %-12s workspace made\n' "$ws"; fi
+  fi
+  skip='' pane=''
+  printf '%s\n' "$rows" | tr '\t' '\037' | while IFS=$(printf '\037') read -r kind a b c d e f g; do
+    case $kind in
+      T)
+        name=$a skip='' pane=''
+        tdir=$(printf '%s' "$b" | sed "s|^~|$HOME|"); case $tdir in '') tdir=$wsdir ;; /*) ;; *) tdir=$wsdir/$tdir ;; esac # relative to the workspace's folder
+        [ -n "$name" ] || name=$(basename "$tdir")
+        if tmux list-windows -t "=$ws" -F '#{window_name}' 2>/dev/null | grep -qxF -- "$name"; then
+          st=$(tmux list-panes -t "=$ws:$name" -F '#{@pitwall_state}' 2>/dev/null | grep . | head -1)
+          printf '· %-12s already up%s\n' "$name" "${st:+ ($st)}"; skip=1; continue
+        fi
+        what=''
+        if [ -n "$e" ]; then
+          if [ -n "$dry" ]; then what="worktree $e, "
+          elif command -v gwm >/dev/null; then
+            p=$(cd "$tdir" && gwm path "$e" 2>/dev/null)
+            [ -n "$p" ] || { (cd "$tdir" && gwm create --name "$e" >/dev/null 2>&1); p=$(cd "$tdir" && gwm path "$e" 2>/dev/null); what="worktree $e (made), "; }
+            [ -n "$p" ] && tdir=$p && what=${what:-"worktree $e, "}
+          else what="no gwm for worktree $e, "; fi
+        fi
+        if [ -n "$c" ]; then cmd=$(up_agent "$c" "$tdir" "$f" "$g"); case $cmd in "$c") what="$what$c" ;; *) what="$what$c, resumed" ;; esac
+        elif [ -n "$d" ]; then cmd=$d what="$what$d"
+        else cmd='' what="${what}a shell"; fi
+        if [ -n "$dry" ]; then printf '+ %-12s would open: %s\n' "$name" "$what"; continue; fi
+        if [ -n "$spare" ]; then # the workspace's first window becomes the first tab
+          tmux rename-window -t "$spare" "$name"; tmux respawn-pane -k -t "$spare" -c "$tdir"
+          pane=$(tmux display -p -t "$spare" '#{pane_id}'); spare=''
+        else
+          pane=$(tmux new-window -d -P -F '#{pane_id}' -t "=$ws:" -n "$name" -c "$tdir")
+        fi
+        [ -n "$cmd" ] && tmux send-keys -t "$pane" "$cmd" Enter
+        printf '✓ %-12s %s\n' "$name" "$what"
+        ;;
+      P)
+        [ -n "$skip" ] && continue
+        cmd=$b; [ -n "$a" ] && cmd=$(up_agent "$a" "$tdir" '' "$c")
+        [ -n "$dry" ] && { printf '+ %-12s   and a pane: %s\n' "$name" "${a:-$b}"; continue; }
+        [ -n "$pane" ] || continue
+        p=$(tmux split-window -d -P -F '#{pane_id}' -t "$pane" -c "$tdir")
+        [ -n "$cmd" ] && tmux send-keys -t "$p" "$cmd" Enter
+        ;;
+      I)
+        inc=$(up_find "$a") || { echo "! include $a: no recipe there" >&2; continue; }
+        up_trust "$inc" ${yes:-} || continue
+        (up_run "$inc" "$dry" "$ws") # its own variables: the rest of this recipe keeps its own
+        ;;
+    esac
+  done
+}
+
+up_list() { # up_list [--plain]: the recipes it knows, and how much of each is up
+  for f in "$UPDIR"/*.toml "$UPDIR"/*.link; do
+    [ -f "$f" ] || continue
+    case $f in *.link) r=$(cat "$f"); [ -f "$r" ] || continue ;; *) r=$f ;; esac
+    rows=$(up_parse "$r") name=$(up_name "$r")
+    ws=$(printf '%s\n' "$rows" | awk -F '\t' '$1 == "W" { print $3 }'); ws=${ws:-$name}
+    tabs=$(printf '%s\n' "$rows" | awk -F '\t' '$1 == "T" { print $2 }')
+    n=$(printf '%s\n' "$tabs" | grep -c .) up=0
+    have=$(tmux list-windows -t "=$ws" -F '#{window_name}' 2>/dev/null || true)
+    for t in $tabs; do printf '%s\n' "$have" | grep -qxF -- "$t" && up=$((up + 1)); done
+    if [ "${1:-}" = --plain ]; then printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$ws" "$n" "$up" "$r"
+    else
+      if [ "$up" = "$n" ] && [ "$n" -gt 0 ]; then s=up; elif [ "$up" = 0 ]; then s=down; else s="$up of $n up"; fi
+      printf '%-18s %-10s %2s tabs  %-10s %s\n' "$name" "$ws" "$n" "$s" "$(printf '%s' "$r" | sed "s|^$HOME|~|")"
+    fi
+  done
+}
+
+# A recipe saved with --save is kept current: tabs opened, closed or renamed, and agents starting new sessions, write
+# it again (in the background, from tmux's hooks and pitwall's). Edit it by hand and it is yours: never written again.
+sum_of() { (shasum -a 256 "$1" 2>/dev/null || sha256sum "$1") | cut -c1-64; }
+
+up_save() { # up_save [workspace] [--auto]: a recipe from a workspace that is open: each tab's folder, agent or command
+  ws=${1:-$(tmux display -p '#{session_name}' 2>/dev/null)} auto=${2:-}
+  if ! tmux has-session -t "=$ws" 2>/dev/null; then [ -n "$auto" ] && return 0; echo "pitwall up --save: no workspace $ws" >&2; exit 1; fi
+  mkdir -p "$UPDIR" "$STATE/up-saved"; out=$UPDIR/$ws.toml new=$UPDIR/.$ws.toml.$$ sumf=$STATE/up-saved/$ws
+  if [ -n "$auto" ]; then
+    [ -f "$out" ] || return 0 # only a workspace you saved once
+    if [ -f "$sumf" ]; then [ "$(cat "$sumf")" = "$(sum_of "$out")" ] || return 0 # edited by hand since: yours now
+    else head -1 "$out" | grep -q '^# pitwall up .*: saved from the open workspace' || return 0; fi
+  fi
+  q() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
+  what_runs() { # what_runs <pane-pid> <current-command> <harness> [session]: agent=… (and its session) or run=…
+    if [ -n "$3" ]; then echo "agent = $(q "$3")"; [ -n "${4:-}" ] && echo "session = $(q "$4")"; return; fi
+    if is_shell "$2"; then # a bare shell is left out, unless it is a `sh -c "cmd"` wrapper (dash keeps itself around)
+      case $(ps -o args= -p "$1" 2>/dev/null) in *" -c "*) set -- "$1" "$(ps -o comm= -p "$(pgrep -P "$1" | head -1)" 2>/dev/null | sed 's|.*/||')" ;; *) return 0 ;; esac
+    fi
+    c=$(pgrep -P "$1" -x "$2" 2>/dev/null | head -1 || true) # the child the pane reports, not a prompt's helper
+    [ -n "$c" ] || c=$(pgrep -P "$1" 2>/dev/null | head -1 || true)
+    args=$(ps -o args= -p "${c:-$1}" 2>/dev/null || true) # no child: the pane runs the command itself
+    case $args in node\ */pnpm* | node\ */npm* | node\ */npx* | node\ */yarn*) args=$(printf '%s' "$args" | sed 's|^node [^ ]*/||') ;; esac
+    [ -z "$args" ] || echo "run = $(q "$args")"
+  }
+  {
+    printf '# pitwall up %s: saved from the open workspace and kept current; edit it and it stays as you leave it\nworkspace = %s\n' "$ws" "$(q "$ws")"
+    tmux list-windows -t "=$ws" -F '#{window_id}' | while read -r win; do
+      first=1
+      # "-" for an empty harness: read merges consecutive tabs (and tmux 3.4 escapes a \037 separator)
+      tmux list-panes -t "$win" -F "#{pane_pid}$TAB#{pane_current_command}$TAB#{?#{@pitwall_harness},#{@pitwall_harness},-}$TAB#{?#{@pitwall_session},#{@pitwall_session},-}$TAB#{pane_current_path}$TAB#{window_name}" |
+        while IFS=$TAB read -r pid cmd harness sid dir wname; do
+          [ "$harness" = - ] && harness=''
+          [ "$sid" = - ] && sid=''
+          r=$(what_runs "$pid" "$cmd" "$harness" "$sid")
+          if [ -n "$first" ]; then
+            [ -n "$r" ] || break # a window whose first pane is a bare shell is left out
+            printf '\n[[tab]]\nname = %s\ndir = %s\n%s\n' "$(q "$wname")" "$(q "$(printf '%s' "$dir" | sed "s|^$HOME|~|")")" "$r"
+            first=''
+          elif [ -n "$r" ]; then printf '[[tab.pane]]\n%s\n' "$r"; fi
+        done
+    done
+  } >"$new"
+  n=$(grep -c '^\[\[tab\]\]' "$new")
+  if [ -n "$auto" ]; then # quietly, and never down to nothing (a workspace closing tab by tab)
+    if [ "$n" -gt 0 ] && ! cmp -s "$new" "$out"; then mv -f "$new" "$out" && sum_of "$out" >"$sumf"; else rm -f "$new"; fi
+    return 0
+  fi
+  [ -f "$out" ] && ! cmp -s "$new" "$out" && cp -p "$out" "$out.bak"
+  mv -f "$new" "$out" && sum_of "$out" >"$sumf"
+  echo "✓ wrote $(printf '%s' "$out" | sed "s|^$HOME|~|") from the $ws workspace: $n tab$( [ "$n" = 1 ] || echo s), kept current from now on"
+}
+
+cmd__autosave() { # _autosave <workspace>: from tmux's hooks; a moment later, so a burst of changes writes once
+  [ "$(tmux show -gqv @pitwall-up-autosave)" = off ] && return 0
+  [ -f "$UPDIR/$1.toml" ] || return 0
+  mkdir -p "$STATE/up-saved"; echo $$ >"$STATE/up-saved/$1.pending"
+  sleep 2
+  [ "$(cat "$STATE/up-saved/$1.pending" 2>/dev/null)" = $$ ] || return 0 # a later change in the burst saves instead
+  up_save "$1" --auto
+  return 0
+}
+
+cmd_up() {
+  dry='' yes=''
+  while :; do
+    case ${1:-} in
+      --list) shift; up_list "$@"; return ;;
+      --save) shift; up_save "${1:-}"; return ;;
+      --dry) dry=1; shift ;;
+      --yes) yes=--yes; shift ;;
+      *) break ;;
+    esac
+  done
+  file=$(up_find "${1:-}") || { echo "pitwall up: no recipe ${1:+for $1 }(a .pitwall.toml here, or $(printf '%s' "$UPDIR" | sed "s|^$HOME|~|")/<name>.toml)" >&2; exit 1; }
+  up_trust "$file" $yes || exit 1
+  case $file in "$UPDIR"/*) ;; *) mkdir -p "$UPDIR" && n=$(up_name "$file") && [ ! -f "$UPDIR/$n.toml" ] && echo "$file" >"$UPDIR/$n.link" ;; esac # --list knows it next time
+  up_run "$file" "$dry"
+}
+
+# The skill (skills/pitwall/SKILL.md) teaches agents to read the lanes and to ask before acting on one: linked into
+# each agent's skills folder that exists, so it follows pitwall's updates. Something else already there stays.
+install_skill() {
+  for d in "$HOME/.claude/skills" "$HOME/.codex/skills" "${HERMES_HOME:-$HOME/.hermes}/skills" "$HOME/.agents/skills"; do
+    [ -d "$d" ] || continue
+    t=$d/pitwall
+    if [ -L "$t" ] && [ "$(readlink "$t")" = "$DIR/skills/pitwall" ]; then echo "skill: already in $t"
+    elif [ -e "$t" ]; then echo "skill: $t exists and is not pitwall's; left alone"
+    elif [ "${1:-}" = --write ]; then ln -s "$DIR/skills/pitwall" "$t" && echo "skill: linked into $t"
+    else echo "skill: would link into $t"; fi
+  done
+}
+
 cmd_doctor() {
   ok=0
   check() { if eval "$2"; then echo "ok    $1"; else echo "MISS  $1${3:+ → $3}"; ok=1; fi; }
@@ -530,6 +884,7 @@ cmd_doctor() {
   check "Codex hooks" 'grep -q pitwall-hook "$HOME/.codex/hooks.json" 2>/dev/null' "pitwall install --write"
   [ -f "${HERMES_HOME:-$HOME/.hermes}/config.yaml" ] &&
     check "Hermes hooks, tool calls included" 'grep -q "pitwall-hook PostToolUse hermes" "${HERMES_HOME:-$HOME/.hermes}/config.yaml" && grep -q "^  post_tool_call:" "${HERMES_HOME:-$HOME/.hermes}/config.yaml"' "pitwall install --write"
+  [ -d "$HOME/.claude/skills" ] && check "the pitwall skill for agents" '[ -e "$HOME/.claude/skills/pitwall/SKILL.md" ]' "pitwall install --write"
   check "python3 (only for install)" 'command -v python3 >/dev/null'
   return $ok
 }
@@ -579,6 +934,12 @@ cmd_demo() {
   show oss:malock '\n  • Ran npm publish --dry-run\n\n  Allow command?  › 1. Yes   2. No\n'
   $T select-window -t lab:dotfiles
   $T run-shell "'$DIR/pitwall.tmux'"
+  # The asking lanes' questions, read off their screens as the hook would have.
+  sleep 0.5
+  sock=$($T display -p '#{socket_path}')
+  $T list-panes -a -F '#{pane_id} #{@pitwall_state} #{@pitwall_since}' | while read -r id st since; do
+    [ "$st" = asking ] && TMUX="$sock,0,0" "$DIR/bin/pitwall" _question "$id" "$since"
+  done
   # Lanes move on their own so you can watch: ait finishes in 15 s while you look elsewhere, then a new lane starts.
   $T run-shell -b "sleep 15; tmux set -p -t lab:ait.1 @pitwall_state done"
   $T run-shell -b "sleep 25; tmux rename-window -t lab:notes fastify-orama \; set -p -t lab:fastify-orama @pitwall_state working \; set -p -t lab:fastify-orama @pitwall_harness claude \; select-pane -t lab:fastify-orama -T 'Bump Orama to v3'; '$DIR/bin/pitwall-tick'"
@@ -591,11 +952,13 @@ case ${1:-} in
   ls) shift; cmd_ls "${1:-}" ;;
   peek) shift; cmd_peek "$@" ;;
   go) shift; cmd_go "$@" ;;
+  answer) shift; cmd_answer "$@" ;;
+  send) shift; cmd_send "$@" ;;
   seen) shift; cmd_seen "$@" ;;
   next) shift; cmd_next "${1:-}" ;;
   dash | board) exec "$DIR/bin/pitwall-dash" ;;
   _lanes) lanes ;;
-  stats) shift; cmd_stats "${1:-}" ;;
+  stats) shift; cmd_stats "$@" ;;
   quota) shift; cmd_quota "${1:-}" ;;
   saved) cmd_saved ;;
   restore) shift; cmd_restore "${1:-}" ;;
@@ -605,12 +968,15 @@ case ${1:-} in
   done) shift; cmd_done "$@" ;;
   _done) shift; cmd__done "$@" ;;
   ws) shift; cmd_ws "$@" ;;
+  up) shift; cmd_up "$@" ;;
   move) shift; cmd_move "$@" ;;
   _move) shift; move_window "$@" ;;
   _resume-cmd) shift; resume_cmd "$@" ;;
+  _autosave) shift; cmd__autosave "$@" ;;
   _reindex) shift; cmd__reindex "$@" ;;
   ot) shift; cmd_ot "$@" ;;
   _escalate) shift; cmd__escalate "$@" ;;
+  _question) shift; cmd__question "$@" ;;
   install) shift; cmd_install "${1:-}" ;;
   doctor) cmd_doctor ;;
   demo) shift; cmd_demo "${1:-}" ;;
@@ -635,6 +1001,8 @@ In the dashboard             ? (with the search empty) shows these there too
                    · i interrupt · R restart, and the ones above)
   tab              the other view: Lanes, OpenTimeline
   ctrl-f           lanes by workspace, or by state; remembered
+  up · ctrl-u      the workspace recipes: ⏎ brings one up
+  ctrl-v           select a lane (or type «select idle»); then ctrl-x, ctrl-w, ctrl-s act on all of them
   esc  ←           back: the actions, then the search, then the selection, then close (ctrl-c closes)
 EOF
     ;;

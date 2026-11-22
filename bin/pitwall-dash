@@ -27,8 +27,8 @@ SPIN=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/pitwall-dash.XXXXXX")
 NEW4=0; ((BASH_VERSINFO[0] >= 4)) && NEW4=1
 
-tick=0 cols=80 lines=24 now=0 dirty=1 load_pid='' sig='' psig='' metrics='' metrics_for='' stats_pid='' stats_due=0 quota=''
-L_state=() L_session=() L_window=() L_id=() L_since=() L_harness=() L_task=() L_transcript=() L_sid=() L_urgent=() L_dir=()
+tick=0 cols=80 lines=24 now=0 dirty=1 load_pid='' quota_data='' sys_hist='' today='' u_tok='' u_pid='' u_rev=0 sig='' psig='' metrics='' metrics_for='' stats_pid='' stats_due=0 quota=''
+L_state=() L_session=() L_window=() L_id=() L_since=() L_harness=() L_task=() L_transcript=() L_sid=() L_urgent=() L_dir=() L_q=() L_ch=()
 WS=() restorable=0
 I_kind=() I_ref=() I_text=() I_key=() # the list: head (a section title), lane, ws, act, cmd
 cur=0 cur_sig='' top=0                # the cursor (an item, and what it points at), the first row shown
@@ -39,7 +39,7 @@ prompt_label='' prompt_do=''          # a prompt's question, and what ⏎ does w
 follow='' notice='' pending='' back_sig='' other_sig='' first_go=''
 marks='|'                             # |pane|pane|, a set of pane ids
 preview=() spin_at=()
-view=lanes last_move=''
+view=lanes last_move='' U_w=() U_a=() U_model=() U_pct=() U_tok=() U_cache=() U_cost=() U_turns=() U_in=() U_cw=() U_cr=() U_out=() U_first=() U_last=() U_ctx=() U_raw=()
 GROUP=$(tmux show -gqv @pitwall_dash_group 2>/dev/null); GROUP=${GROUP:-workspace} # ctrl-f flips it: workspace · state               # lanes · ot; what u (undo the last move) puts back
 m_pct='' m_git=''                     # the lane under the cursor: context used, its git state
 # OpenTimeline: stories (S_) and their latest changes (C_), fetched in the background
@@ -58,7 +58,7 @@ mark_count() { local m=${marks//[^|]/}; echo $((${#m} - 1)); }
 marks_n() { local m=${marks//[^|]/}; mc=$((${#m} - 1)); } # the same, without a subshell
 upper() { if ((NEW4)); then u=${1^^}; else u=$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]'); fi; }
 lane_of() { local i; for ((i = 0; i < ${#L_id[@]}; i++)); do [ "${L_id[i]}" = "$1" ] && echo "$i" && return; done; }
-selectable() { case ${I_kind[$1]-head} in head | task | pipe) return 1 ;; esac; } # a story's │ and a lane's task line are not
+selectable() { case ${I_kind[$1]-head} in head | task | pipe | info) return 1 ;; esac; } # a story's │ and a lane's task line are not
 norm() { if ((NEW4)); then nm=${1,,}; else nm=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]'); fi; nm=${nm//[^a-z0-9]/}; }
 opener() { if command -v open >/dev/null; then open "$1"; else xdg-open "$1"; fi >/dev/null 2>&1 & }
 here_ws() { tmux display -p ${from:+-t "$from"} '#{session_name}' 2>/dev/null; } # the workspace you opened the dashboard in
@@ -116,7 +116,9 @@ fetch() {
   "$PITWALL" _lanes 2>/dev/null | tr '\t' '\037' >"$TMP/lanes.new"
   tmux list-sessions -F '#{session_name}' >"$TMP/ws.new" 2>/dev/null
   # one line each: tmux 3.4 escapes control characters in display's output, so no separator inside a line
-  tmux display -p '#{@pitwall_quota_plain}' \; display -p '#{@pitwall_restorable}' \; display -p '#{@pitwall_last_move}' >"$TMP/opts.new" 2>/dev/null
+  tmux display -p '#{@pitwall_quota_plain}' \; display -p '#{@pitwall_restorable}' \; display -p '#{@pitwall_last_move}' \
+    \; display -p '#{@pitwall_quota_data}' \; display -p '#{@pitwall_sys_hist}' >"$TMP/opts.new" 2>/dev/null
+  [ "$view" = usage ] && "$PITWALL" stats --today --plain >"$TMP/today" 2>/dev/null # where the day went, per lane
   mv -f "$TMP/lanes.new" "$TMP/lanes"; mv -f "$TMP/ws.new" "$TMP/ws"; mv -f "$TMP/opts.new" "$TMP/opts"
 }
 load() { fetch; parse; } # at once, after an action
@@ -126,12 +128,12 @@ load_poll() { [ -n "$load_pid" ] && ! kill -0 "$load_pid" 2>/dev/null && load_pi
 # Lanes, split once here (never while drawing). Marks on lanes that are gone are dropped, and the dashboard says so.
 # The list is rebuilt (and redrawn) only when something on it changed.
 parse() {
-  local rank state session window id since harness task transcript sid urgent dir new='' seen=$US kept='|' gone=0 m rest
-  L_state=() L_session=() L_window=() L_id=() L_since=() L_harness=() L_task=() L_transcript=() L_sid=() L_urgent=() L_dir=() WS=()
-  while IFS="$US" read -r rank state session window id since harness task transcript sid urgent dir; do
+  local rank state session window id since harness task transcript sid urgent dir q ch new='' seen=$US kept='|' gone=0 m rest
+  L_state=() L_session=() L_window=() L_id=() L_since=() L_harness=() L_task=() L_transcript=() L_sid=() L_urgent=() L_dir=() L_q=() L_ch=() WS=()
+  while IFS="$US" read -r rank state session window id since harness task transcript sid urgent dir q ch; do
     L_urgent+=("$urgent") L_state+=("$state") L_session+=("$session") L_window+=("$window") L_id+=("$id") L_since+=("$since")
-    L_harness+=("$harness") L_task+=("$task") L_transcript+=("$transcript") L_sid+=("$sid") L_dir+=("$dir")
-    new+="$state$id$since$task$urgent$session$window$dir|"
+    L_harness+=("$harness") L_task+=("$task") L_transcript+=("$transcript") L_sid+=("$sid") L_dir+=("$dir") L_q+=("$q") L_ch+=("$ch")
+    new+="$state$id$since$task$urgent$session$window$dir$q|"
   done <"$TMP/lanes"
   while IFS= read -r m; do case $seen in *"$US$m$US"*) ;; *) seen+="$m$US" WS+=("$m") ;; esac; done <"$TMP/ws"
   rest=${marks#|}
@@ -140,10 +142,11 @@ parse() {
     case "$US${L_id[*]-}$US" in *[[:space:]$US]"$m"[[:space:]$US]*) kept+="$m|" ;; *) gone=$((gone + 1)) ;; esac
   done
   if ((gone)); then marks=$kept notice="$gone selected lane$( ((gone > 1)) && echo s) closed, dropped from the selection"; fi
-  { IFS= read -r quota; IFS= read -r restorable; IFS= read -r last_move; } <"$TMP/opts"
+  { IFS= read -r quota; IFS= read -r restorable; IFS= read -r last_move; IFS= read -r quota_data; IFS= read -r sys_hist; } <"$TMP/opts"
+  today=''; [ "$view" = usage ] && [ -f "$TMP/today" ] && today=$(cat "$TMP/today")
   case $restorable in '' | *[!0-9]*) restorable=0 ;; esac
   clock
-  new+="$quota$restorable$last_move$ot_rev$marks${WS[*]-}$((now / 60))" # ages move by the minute
+  new+="$quota$restorable$last_move$ot_rev$marks${WS[*]-}$((now / 60))$view$today$quota_data$sys_hist$u_rev" # ages move by the minute
   [ "$new" != "$sig" ] && sig=$new && build
 }
 
@@ -212,12 +215,13 @@ sorted() { # sorted <lane index>…: by urgency, then workspace and name
 }
 
 lane_actions() { # lane_actions <lane> [selection count]: the ones you reach for most first
-  local n=${2:-0} what='the lane'
+  local n=${2:-0} what='the lane' ag ln tb
   ((n)) && what="$n lanes"
+  if ((n == 1)); then what='the selected lane' ag='the selected agent' ln='the selected lane' tb='the selected tab'; else ag="$n agents" ln="$n lanes" tb="$n tabs"; fi
   item act "go@$1" 'Go to the lane' '⏎'
   [ "${L_state[$1]}" = asking ] && item act "answer@$1" 'Answer: 1 2 3, as the agent offers' '1 2 3'
   item act "output@$1" 'Read the whole output' space
-  item act "write@$1" 'Write to the agent…' s
+  if ((n)); then item act "write@$1" "Write the same message to $ag…" s; else item act "write@$1" 'Write to the agent…' s; fi
   item act "diff@$1" "Open the worktree's diff in lumen" d
   item act "branchdiff@$1" "Open the branch's diff against its base" D
   item act "nvim@$1" 'Open the folder in nvim' o
@@ -225,14 +229,14 @@ lane_actions() { # lane_actions <lane> [selection count]: the ones you reach for
   item act "pr@$1" "Open the branch's PR" p
   item act "move@$1" "Move $what to a workspace…" m
   item act "follow@$1" "Move $what and go there…" M
-  item act "rename@$1" 'Rename tab…' r
+  if ((n)); then item act "rename@$1" "Rename $tb: a prefix…" r; else item act "rename@$1" 'Rename tab…' r; fi
   if marked "${L_id[$1]}"; then item act "select@$1" 'Unselect' v; else item act "select@$1" 'Select' v; fi
   item act "new@lane:$1" 'New lane here: claude · codex · hermes…' a
   item act "worktree@lane:$1" 'New gwm worktree…' t
-  item act "interrupt@$1" 'Interrupt the agent (esc)' i
-  item act "restart@$1" 'Restart the agent, resuming its session' R
+  if ((n)); then item act "interrupt@$1" "Interrupt $ag (esc)" i; else item act "interrupt@$1" 'Interrupt the agent (esc)' i; fi
+  if ((n)); then item act "restart@$1" "Restart $ag on their sessions" R; else item act "restart@$1" 'Restart the agent, resuming its session' R; fi
   item act "copy@$1" 'Copy the resume command' y
-  item act "close@$1" 'Close the lane' x
+  if ((n)); then item act "close@$1" "Close $ln" x; item act "unselect@$1" 'Unselect all' ''; else item act "close@$1" 'Close the lane' x; fi
 }
 
 # ctrl+letter runs an action on the lane under the cursor from anywhere, the search included (letters alone type).
@@ -325,7 +329,7 @@ ws_actions() { # ws_actions <workspace>
   item act "wsclose@$1" 'Close the workspace' x
 }
 
-# Actions are searchable: "rename briscola" or "diff ait" put the action on that lane first. A word picks an action
+# Actions are searchable: "rename ait" or "diff website" put the action on that lane first. A word picks an action
 # when it starts one of its words (3 letters, or a whole word like go or pr); the other words find the lane.
 VERBS='go:Go to:go open jump switch
 output:Read the whole output of:output read log less scroll
@@ -358,6 +362,14 @@ suggest() { # suggest → items: the actions the search names, on the lanes (or 
       if ((hit)); then used+="$w "; else rest+="$w "; fi
     done
     [ -n "$used" ] || continue
+    if [ "$code" = select ]; then # «select idle»: every lane in that state
+      case ${rest% } in idle | working | asking | done | gone)
+        k=0; for ((i = 0; i < ${#L_id[@]}; i++)); do [ "${L_state[i]}" = "${rest% }" ] && k=$((k + 1)); done
+        if ((k)); then ((total++)) || section 'SUGGESTED'; item cmd "selstate@${rest% }" "Select every ${rest% } lane ($k)" ''; fi
+        continue
+        ;;
+      esac
+    fi
     n=0
     if [ -n "$rest" ]; then
       query=$rest # matches() reads $query; put back below
@@ -385,6 +397,18 @@ suggest() { # suggest → items: the actions the search names, on the lanes (or 
   done <<<"$VERBS"
 }
 
+recipes() { # «up»: the workspace recipes pitwall up knows, how much of each is up; the rest of the search filters them
+  local name ws n up file all=$query rest=${query#up} st
+  rest=${rest# }
+  section 'UP A WORKSPACE'
+  while IFS=$'\t' read -r name ws n up file; do
+    if [ -n "$rest" ]; then query=$rest; matches "$name $ws" || { query=$all; continue; }; query=$all; fi
+    if [ "$up" = "$n" ] && [ "$n" != 0 ]; then st=up; elif [ "$up" = 0 ]; then st=down; else st="$up of $n up"; fi
+    item cmd "up@$name" "$name" "$ws · $n tabs · $st"
+  done < <("$PITWALL" up --list --plain 2>/dev/null)
+  item cmd upsave "Save the $(here_ws) workspace as a recipe…" ''
+}
+
 named_anything() { # does the search, as typed, find a lane or a workspace by itself?
   local i ws
   for ((i = 0; i < ${#L_id[@]}; i++)); do matches "${L_window[i]} ${L_session[i]} ${L_task[i]} ${L_harness[i]} ${L_state[i]}" && return 0; done
@@ -392,8 +416,116 @@ named_anything() { # does the search, as typed, find a lane or a workspace by it
   return 1
 }
 
+# --- the Usage view: limits and their pace, today per lane, the machine ------------------------------------------
+
+dur() { # dur <seconds> → $du: 2h10m, 34m, —
+  local s=${1:-0}
+  if ((s < 60)); then du='—'; elif ((s < 3600)); then du="$((s / 60))m"; elif ((s < 86400)); then du="$((s / 3600))h$(printf '%02d' $((s % 3600 / 60)))m"
+  else du="$((s / 86400))d$((s % 86400 / 3600))h"; fi
+}
+
+spark() { # spark <values 0-100…> → $sp
+  local v c=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █)
+  sp=''
+  for v in $1; do ((v > 100)) && v=100; sp+=${c[v * 7 / 100]}; done
+}
+
+usage_tokens() { # each lane's tokens, read from its transcript in the background (a fraction of a second each)
+  [ -n "$u_pid" ] && kill -0 "$u_pid" 2>/dev/null && return
+  local i
+  (for ((i = 0; i < ${#L_id[@]}; i++)); do
+    printf '%s\037%s\n' "${L_id[i]}" "$("$STATS" "${L_harness[i]}" "${L_transcript[i]}" "${L_sid[i]}" 2>/dev/null | head -1 | tr '\t' '\037')" # empty fields survive
+  done >"$TMP/tokens.new" && mv -f "$TMP/tokens.new" "$TMP/tokens") &
+  u_pid=$!
+}
+
+usage_poll() { [ -n "$u_pid" ] && ! kill -0 "$u_pid" 2>/dev/null && u_pid='' && u_tok=$(cat "$TMP/tokens" 2>/dev/null) && u_rev=$((u_rev + 1)) && load; }
+
+info() { item info '' "$1" "$2"; } # info <drawn text> <its length on screen>: a line to read, not to pick
+
+# usage_cols <glyph> <lane> <agent> <model> <ctx> <tokens> <cached> <cost> <turns> <today> <waited> → $uc, padded by
+# characters (printf pads by bytes, and — is three of them)
+USAGE_W=(2 -17 -8 -13 5 9 8 10 7 8 8)
+usage_cols() {
+  local i=0 a w v
+  uc=''
+  for a in "$@"; do
+    w=${USAGE_W[i]} v=$a
+    if ((w < 0)); then w=$((-w)); v=${v:0:$((w - 1))}; fill $((w - ${#v})) ' '; uc+="$v$fl"
+    else v=${v:0:$w}; fill $((w - ${#v})) ' '; uc+="$fl$v"; fi
+    i=$((i + 1))
+  done
+}
+
+usage_sessions() { # the sessions table: one aligned row per lane (the search filters them), then the total
+  local i w order='' t
+  section 'SESSIONS · tokens and cost since each began, time today'
+  # each lane's numbers, into arrays once here: drawing reads them, never runs anything
+  local pane name ws as j model pct ctx raw tot out inp cw cr o cost turns first last sumraw=0 sumc=0 sumw=0 suma=0 priced=0
+  U_w=() U_a=() U_model=() U_pct=() U_tok=() U_cache=() U_cost=() U_turns=() U_in=() U_cw=() U_cr=() U_out=() U_first=() U_last=() U_ctx=() U_raw=()
+  while IFS=$'\t' read -r pane name ws as; do
+    for ((j = 0; j < ${#L_id[@]}; j++)); do [ "${L_id[j]}" = "$pane" ] && U_w[j]=$ws U_a[j]=$as && break; done
+  done <<<"$today"
+  while IFS="$US" read -r pane model pct ctx raw tot out inp cw cr o cost turns first last; do
+    for ((j = 0; j < ${#L_id[@]}; j++)); do
+      [ "${L_id[j]}" = "$pane" ] || continue
+      U_model[j]=$model U_pct[j]=$pct U_tok[j]=$tot U_cost[j]=$cost U_turns[j]=$turns
+      U_in[j]=$inp U_cw[j]=$cw U_cr[j]=$cr U_out[j]=$o U_first[j]=$first U_last[j]=$last U_ctx[j]=$ctx
+      ((${inp:-0} + ${cw:-0} + ${cr:-0} > 0)) && U_cache[j]=$((${cr:-0} * 100 / (${inp:-0} + ${cw:-0} + ${cr:-0})))
+      U_raw[j]=$raw
+      [ -n "$cost" ] && priced=$((priced + 1))
+      break
+    done
+  done <<<"$u_tok"
+  # the header, in the columns the rows use
+  usage_cols '' 'LANE' 'AGENT' 'MODEL' 'CTX' 'TOKENS' 'CACHED' 'COST' 'TURNS' 'TODAY' 'WAITED'
+  info "  ${DIM}${uc}${R}" ${#uc}
+  for ((i = 0; i < ${#L_id[@]}; i++)); do
+    [ -z "$query" ] || matches "${L_window[i]} ${L_session[i]} ${L_harness[i]} ${U_model[i]-} ${L_task[i]}" || continue
+    order+="${U_w[i]:-0}"$'\t'"$i"$'\n'; sumw=$((sumw + ${U_w[i]:-0})); suma=$((suma + ${U_a[i]:-0}))
+    sumraw=$((sumraw + ${U_raw[i]:-0}))
+    [ -n "${U_cost[i]-}" ] && sumc=$(awk -v a="$sumc" -v b="${U_cost[i]}" 'BEGIN { printf "%.2f", a + b }')
+  done
+  [ -n "$order" ] || { info "  ${DIM}No session matches «$query».${R}" 40; return; }
+  for i in $(printf '%s' "$order" | sort -t$'\t' -k1,1nr | cut -f2); do item lane "$i"; done
+  [ -n "$u_tok" ] || info "  ${DIM}Reading each lane's transcript…${R}" 30
+  local th; th=$(awk -v n="$sumraw" 'BEGIN { if (n >= 1e9) printf "%.1fB", n / 1e9; else if (n >= 1e6) printf "%.1fM", n / 1e6; else if (n >= 1e3) printf "%.0fk", n / 1e3; else print n }')
+  dur "$sumw"; local tw=$du; dur "$suma"
+  t='all lanes'; [ -n "$query" ] && t='these lanes'
+  usage_cols '' "$t" '' '' '' "$th" '' "\$$sumc" '' "$tw" "$du"
+  info "  ${TEXT}${uc}${R}" ${#uc}
+  ((priced < ${#L_id[@]})) && info "  ${DIM}Cost is the API-list equivalent; agents without a known price (Codex: add ~/.config/pitwall/prices) count as —.${R}" 90
+}
+
+usage() {
+  local r prov unit pct reset pace left span el proj eta t b i w order=''
+  if [ -n "$query" ]; then usage_sessions; return; fi # searching: just the sessions that match
+  section 'LIMITS'
+  for r in $quota_data; do
+    IFS=: read -r prov unit pct reset pace <<<"$r"
+    left=$((reset - now)); ((left < 0)) && left=0
+    if [ "$unit" = wk ]; then span=604800; else span=18000; fi
+    el=$(((span - left) * 100 / span)); ((el < 1)) && el=1
+    bar "$pct"; dur "$left"; t="  ${TEXT}$(printf '%-7s %-3s' "$prov" "$unit")${R} ${b} ${TEXT}$(printf '%3s%%' "$pct")${R}  ${DIM}$(printf '↻ %-7s' "$du")${R}"
+    proj=$((pct * 100 / el))
+    if ((pct < 2)); then :
+    elif ((proj <= 105)); then t+="   ${GREEN}on pace${R}"
+    else eta=$(((100 - pct) * (span - left) / (pct > 0 ? pct : 1))); dur "$eta"; t+="   ${AMBER}ahead: lasts ~${du}${R}"; fi
+    info "$t" 50
+  done
+  [ -n "$quota_data" ] || info "  ${DIM}No limits yet: CodexBar fills them in (pitwall quota --refresh).${R}" 60
+  usage_sessions
+  section 'MACHINE · the last two minutes'
+  section 'MACHINE · the last two minutes'
+  if [ -n "$sys_hist" ]; then
+    spark "${sys_hist%%;*}"; info "  ${MUTED}cpu ${R}${TEXT}${sp}${R}" 40
+    spark "${sys_hist#*;}"; info "  ${MUTED}mem ${R}${TEXT}${sp}${R}" 40
+  else info "  ${DIM}With @pitwall-system on (tabs layout), cpu and memory over time show here.${R}" 60; fi
+}
+
 lane_item() { # a lane, and what its agent is on (not a shell's user@host title)
   item lane "$1"
+  [ "${L_state[$1]}" = asking ] && [ -n "${L_q[$1]-}" ] && { item task "$1"; return; } # what it asks, while it asks
   case ${L_task[$1]} in '' | *@*:* | "${HOSTNAME%%.*}"*) ;; *) item task "$1" ;; esac
 }
 
@@ -426,7 +558,8 @@ build() {
   I_kind=() I_ref=() I_text=() I_key=()
   case $mode in
     browse)
-      if [ "$view" = ot ]; then
+      if [ "$view" = usage ]; then usage
+      elif [ "$view" = ot ]; then
         if [ "$ot_state" = ok ]; then stories; else ot_offline; fi
       elif [ -z "$query" ]; then
         local waiting=() rest=() st
@@ -464,9 +597,10 @@ build() {
           section 'COMMANDS'; item cmd search "Search the lanes' output for «${query:1}»" '⏎'
         fi
       else
+        if [ "${query%% *}" = up ]; then recipes; fi
         suggest
         for ((i = 0; i < ${#L_id[@]}; i++)); do
-          matches "${L_window[i]} ${L_session[i]} ${L_task[i]} ${L_harness[i]} ${L_state[i]}" && shown+="$i "
+          matches "${L_window[i]} ${L_session[i]} ${L_task[i]} ${L_harness[i]} ${L_state[i]} ${L_q[i]-}" && shown+="$i "
         done
         if [ -n "$shown" ]; then
           section 'LANES'
@@ -611,7 +745,19 @@ row() { # row <item> <width> → $line (and $plain, its length on screen)
       style "${L_state[ref]}" "${L_urgent[ref]}"
       age "${L_since[ref]}"
       case ${L_state[ref]} in asking) st="asking${a:+ $a}" stc=$colour ;; done) st="done${a:+ $a}" stc=$GREEN ;; esac
-      if [ -n "$st" ]; then
+      if [ "$view" = usage ] && [ "$mode" = browse ]; then # the columns of the header above
+        local tw ta c="${U_cost[ref]-}" p="${U_pct[ref]-}" k="${U_cache[ref]-}" cc='—'
+        [ -n "$c" ] && cc="\$$c"
+        dur "${U_w[ref]:-0}"; tw=$du; dur "${U_a[ref]:-0}"; ta=$du
+        usage_cols '' "${L_window[ref]}" "${L_harness[ref]:-—}" "${U_model[ref]:-—}" "${p:+$p%}" "${U_tok[ref]:-—}" "${k:+$k%}" "$cc" "${U_turns[ref]:-}" "$tw" "$ta"
+        if marked "${L_id[ref]}"; then line="${BLUE}●"; else line=' '; fi
+        line+="${R} ${colour}${glyph}${R} ${TEXT}${uc:2:17}${R}${MUTED}${uc:19:21}${R}"
+        if ((${p:-0} >= 80)); then line+="${AMBER}${uc:40:5}${R}"; else line+="${TEXT}${uc:40:5}${R}"; fi
+        line+="${TEXT}${uc:45:9}${R}${MUTED}${uc:54:8}${R}${TEXT}${uc:62:10}${R}${MUTED}${uc:72:7}${R}${TEXT}${uc:79:8}${R}"
+        if ((${U_a[ref]:-0} >= 600)); then line+="${AMBER}${uc:87}${R}"; else line+="${TEXT}${uc:87}${R}"; fi
+        plain=$((2 + ${#uc}))
+        return 0 # the row is the columns: no name and meta below
+      elif [ -n "$st" ]; then
         meta="$st · ${L_session[ref]} · ${L_harness[ref]:-—}" cmeta="${stc}${st}${R}${DIM} · ${L_session[ref]} · ${L_harness[ref]:-—}${R}"
       else
         meta="${L_session[ref]} · ${L_harness[ref]:-—}${a:+ · ${a}}"
@@ -624,8 +770,16 @@ row() { # row <item> <width> → $line (and $plain, its length on screen)
       line+="${R} ${colour}${glyph}${R} ${TEXT}${hlo}${R}"
       plain=$((4 + ${#lane_name}))
       ;;
-    task) t=${L_task[ref]:0:$((w - 8))}; line="      ${DIM}${t}${R}"; plain=$((6 + ${#t})) ;;
+    task)
+      if [ "${L_state[ref]}" = asking ] && [ -n "${L_q[ref]-}" ]; then # the question in the lane's colour, then its answers
+        t=${L_q[ref]:0:$((w - 8))} n=$((w - 9 - ${#t}))
+        if [ "${L_urgent[ref]}" = urgent ]; then line="      ${BOLD}${RED}${t}${R}"; else line="      ${AMBER}${t}${R}"; fi
+        plain=$((6 + ${#t}))
+        if [ -n "${L_ch[ref]-}" ] && ((n > 8)); then line+="   ${DIM}${L_ch[ref]:0:$((n - 3))}${R}"; plain=$((plain + 3 + ${#L_ch[ref]})); fi
+      else t=${L_task[ref]:0:$((w - 8))}; line="      ${DIM}${t}${R}"; plain=$((6 + ${#t})); fi
+      ;;
     pipe) line="  ${DIM}│${R}"; plain=3 ;;
+    info) line=${I_text[$1]}; plain=${I_key[$1]:-0} ;;
     story)
       when "${S_at[ref]}"
       meta=$wh cmeta="${DIM}${wh}${R}"
@@ -677,6 +831,55 @@ bar() { # bar <percent> → $b, ten cells
 
 ms_colour() { case $1 in blocker) mc="${BOLD}${RED}" ;; decision | handoff) mc=$AMBER ;; finding) mc=$BLUE ;; resolution) mc=$GREEN ;; *) mc=$MUTED ;; esac; }
 
+hum() { # hum <count> → $hu: 1.2M, 34k
+  local n=${1:-0}
+  if ((n >= 1000000000)); then hu="$((n / 1000000000)).$((n % 1000000000 / 100000000))B"
+  elif ((n >= 1000000)); then hu="$((n / 1000000)).$((n % 1000000 / 100000))M"
+  elif ((n >= 1000)); then hu="$((n / 1000))k"; else hu=$n; fi
+}
+
+kv() { # kv <label> <value> [colour]: a line of the Usage side, label dim and value lined up
+  local l=$1
+  fill $((16 - ${#l})) ' '
+  R_lines+=("  ${DIM}${l}${R}${fl}${3:-$TEXT}${2}${R}")
+}
+
+usage_side() { # usage_side <lane> <width>: one session in detail, next to the table
+  local i=$1 w=$2 c=${U_cost[$1]-} t=${U_turns[$1]:-0} in=${U_in[$1]:-0} cw=${U_cw[$1]:-0} cr=${U_cr[$1]:-0} o=${U_out[$1]:-0} span pct col
+  upper "${L_window[i]} · ${L_harness[i]:-shell} · ${U_model[i]:-no transcript}"
+  R_lines+=("${DIM}${u}${R}")
+  tilde "${L_dir[i]-}"
+  R_lines+=("${DIM}${td:0:$w}${R}" '')
+  if [ -z "${U_turns[i]-}" ]; then R_lines+=("${MUTED}No transcript pitwall can read for this lane yet.${R}"); return; fi
+  R_lines+=("${DIM}TOKENS${R}")
+  hum "$in"; kv input "$hu"
+  hum "$cw"; kv 'cache written' "$hu"
+  pct=0; ((in + cw + cr > 0)) && pct=$((cr * 100 / (in + cw + cr)))
+  hum "$cr"; kv 'cache read' "$hu  ${DIM}(${pct}% of the input)${R}"
+  hum "$o"; kv output "$hu"
+  col=$TEXT; ((${U_pct[i]:-0} >= 80)) && col=$AMBER
+  hum "${U_ctx[i]:-0}"; kv context "$hu  ${DIM}(${U_pct[i]:-?}% of the window)${R}" "$col"
+  R_lines+=('' "${DIM}COST · API-list equivalent${R}")
+  if [ -n "$c" ]; then
+    kv total "\$$c" "$BOLD$TEXT"
+    ((t > 0)) && kv 'per turn' "\$$(awk -v c="$c" -v t="$t" 'BEGIN { printf "%.3f", c / t }')"
+    span=$((${U_last[i]:-0} - ${U_first[i]:-0}))
+    ((span > 2 * 86400)) && kv 'per day' "\$$(awk -v c="$c" -v s="$span" 'BEGIN { printf "%.2f", c * 86400 / s }')  ${DIM}(over $((span / 86400)) days)${R}"
+  else
+    kv total "—  ${DIM}no price for ${U_model[i]:-this model}: ~/.config/pitwall/prices${R}"
+  fi
+  R_lines+=('' "${DIM}TIME${R}")
+  kv turns "$t"
+  if ((${U_first[i]:-0} > 0)); then
+    tf '%d %b %H:%M' "${U_first[i]}"; kv started "$tfo"
+    age "${U_last[i]}"; if [ "$a" = now ]; then kv 'last turn' 'just now'; else kv 'last turn' "${a} ago"; fi
+    dur $((${U_last[i]:-0} - ${U_first[i]:-0})); kv 'session span' "$du"
+  fi
+  dur "${U_w[i]:-0}"; kv 'working today' "$du"
+  col=$TEXT; ((${U_a[i]:-0} >= 600)) && col=$AMBER
+  dur "${U_a[i]:-0}"; kv 'waited today' "$du" "$col"
+}
+
 # The right side: the lane's state, git and recent output; a workspace's lanes; a story; or what an action does.
 side() { # side <width> → R_lines (array of drawn lines)
   local w=$1 k=${I_kind[cur]-} ref=${I_ref[cur]-} i dir t s n=0 newest='' room
@@ -684,6 +887,7 @@ side() { # side <width> → R_lines (array of drawn lines)
   case $k in
     lane)
       i=$ref
+      if [ "$view" = usage ]; then usage_side "$i" "$w"; return; fi
       age "${L_since[i]}"
       upper "${L_window[i]} · ${L_state[i]}${a:+ ${a}} · ${L_harness[i]:-shell}"
       R_lines+=("${DIM}${u}${R}")
@@ -700,7 +904,10 @@ side() { # side <width> → R_lines (array of drawn lines)
         fi
       fi
       [ -n "${L_task[i]}" ] && R_lines+=("${TEXT}${L_task[i]:0:$w}${R}")
-      [ "${L_state[i]}" = asking ] && R_lines+=('' "${AMBER}${BOLD}1 2 3${R}${AMBER} answer here${R}${DIM} · ctrl-s write · space the whole output${R}")
+      if [ "${L_state[i]}" = asking ]; then
+        [ -n "${L_q[i]-}" ] && R_lines+=('' "${AMBER}${BOLD}${L_q[i]:0:$w}${R}") && [ -n "${L_ch[i]-}" ] && R_lines+=("${AMBER}${L_ch[i]:0:$w}${R}")
+        R_lines+=('' "${AMBER}${BOLD}1 2 3${R}${AMBER} answer here${R}${DIM} · ctrl-s write · space the whole output${R}")
+      fi
       R_lines+=('')
       room=$((body - ${#R_lines[@]})) # the newest lines: the question is at the bottom
       n=${#preview[@]}
@@ -765,6 +972,10 @@ side() { # side <width> → R_lines (array of drawn lines)
         wsrename) say "Restore records follow the new name." ;;
         newws | movenew) say "A new workspace in the folder you opened the dashboard from." ;;
         undo) say "Puts the tabs you last moved back in their workspaces." ;;
+        unselect) say "Clears the selection; nothing else changes." ;;
+        up) say "pitwall up ${ref#up@}: brings back the tabs that are missing (agents resume their last session), keeps the rest, then takes you there." ;;
+        upsave) say "Writes ~/.config/pitwall/up/$(here_ws).toml from its tabs: each one's folder, agent or running command. Then «up» brings it back any time." ;;
+        selstate) say "Adds every lane in that state to the selection: then ctrl-x closes them, ctrl-w moves them." ;;
         restore) say "Reopens sessions, tabs and panes, and resumes each agent." ;;
         search) say "Searches the last 500 lines of every lane." ;;
         help) say "Every key of the dashboard." ;;
@@ -795,6 +1006,8 @@ draw_help() {
     '1 2 3:answer the lane under the cursor when it asks (search empty)' 'space:read its whole output (search empty)' \
     'in actions:n e to move, and a letter: also D branch diff · M move and go · a new lane · i interrupt · R restart' \
     'ctrl-f:lanes by workspace, or by state (working, idle, gone); remembered' \
+    'up · ctrl-u:the workspace recipes: ⏎ brings one up (only what is missing); save the current one as a recipe' \
+    'selection:ctrl-v picks lanes («select idle» picks them all); then ctrl-x closes, ctrl-w moves, ctrl-s writes to them' \
     'ctrl-c:close, from anywhere' \
     'u:undo the last move (a command, with the search empty or «undo»)' \
     'esc ←:back: the actions, then the search, then the selection, then close'; do
@@ -810,6 +1023,7 @@ draw_help() {
 draw() {
   [ "$mode" = help ] && { draw_help; return; }
   local out row y lw=$((cols * 48 / 100)) rw i c_ask=0 c_done=0 c_work=0 c_idle=0 body bot n box hint label picked hidden
+  [ "$view" = usage ] && lw=$((cols - 34 > 104 ? 104 : cols - 34)) # the table needs ~100 columns; the rest is the detail
   rw=$((cols - lw - 5))
   clock
   spin_at=()
@@ -820,8 +1034,8 @@ draw() {
   local tabs tl=0 v vl blockers=0 right=$quota
   for ((i = 0; i < ${#S_id[@]}; i++)); do [ "${S_ms[i]}" = blocker ] && blockers=$((blockers + 1)); done
   tabs=''
-  for v in lanes ot; do
-    if [ "$v" = lanes ]; then vl='Lanes'; else vl='OpenTimeline'; fi
+  for v in lanes ot usage; do
+    case $v in lanes) vl='Lanes' ;; ot) vl='OpenTimeline' ;; *) vl='Usage' ;; esac
     if [ "$v" = "$view" ]; then tabs+="${CHIP}${BOLD}${TEXT} ${vl}"; else tabs+="${MUTED} ${vl}"; fi
     tl=$((tl + ${#vl} + 3))
     if [ "$v" = ot ]; then
@@ -839,6 +1053,7 @@ draw() {
   # The search box: amber while it takes your typing.
   box=$DIM label='❯' hint='lanes · workspaces · actions'
   [ "$view" = ot ] && hint='stories · projects · spaces'
+  [ "$view" = usage ] && hint='find sessions: lane, workspace, agent, model'
   case $mode in
     browse) box=$AMBER; [ "$view" = ot ] && [ "$ot_state" != ok ] && box=$DIM hint='each command has its key' ;;
     move) box=$AMBER label='move to ❯' hint='type a workspace; a new name makes one' ;;
@@ -884,7 +1099,9 @@ draw() {
       local esc_does
       if [ -n "$query" ]; then esc_does=clear; elif ((picked)); then esc_does=unselect; else esc_does=close; fi
       local other=state; [ "$GROUP" = state ] && other=workspace
-      if [ "$view" = ot ]; then
+      if [ "$view" = usage ]; then chips '⏎:go to the lane' 'shift-tab:actions' 'tab:lanes' 'ctrl-n e:down up' "esc:$esc_does"
+      elif ((picked)) && [ "$view" = lanes ]; then chips '⏎:go' "ctrl-w:move $picked" "ctrl-x:close $picked" "ctrl-s:write $picked" 'shift-tab:more' "esc:$esc_does"
+      elif [ "$view" = ot ]; then
         if [ "$ot_state" = ok ]; then chips '⏎:open' 'ctrl-g:its lane' 'shift-tab:actions' 'tab:lanes' 'ctrl-n e:down up' "esc:$esc_does"
         else
           local keys='' j
@@ -984,9 +1201,34 @@ new_tab() { # new_tab <workspace> <dir> <name> [command typed into its shell] �
   return 0
 }
 
+selected() { # selected → sel: the lane indices of the selection, sel_working: how many of them work
+  local rest=${marks#|} m i
+  sel=() sel_working=0
+  while [ -n "$rest" ]; do
+    m=${rest%%|*} rest=${rest#*|}
+    for ((i = 0; i < ${#L_id[@]}; i++)); do [ "${L_id[i]}" = "$m" ] && { sel+=("$i"); [ "${L_state[i]}" = working ] && sel_working=$((sel_working + 1)); break; }; done
+  done
+}
+
+group_act() { # group_act <code>: close, interrupt, restart, write or rename every selected lane; it names them, then clears
+  local i n
+  selected; n=${#sel[@]}
+  case $1 in
+    close) target_label="close $n lanes$( ((sel_working)) && printf ' (%s working)' "$sel_working")"; mode=confirm prompt_do=closesel dirty=1 ;;
+    restart) target_label="restart $n agents"; mode=confirm prompt_do=restartsel dirty=1 ;;
+    interrupt) for i in ${sel[@]+"${sel[@]}"}; do tmux send-keys -t "${L_id[i]}" Escape; done; marks='|' notice="interrupted $n agents"; to_browse ;;
+    write) ask "to $n agents" '' writesel ;;
+    rename) ask "prefix for $n tabs" '' renamesel ;;
+  esac
+}
+
 act() { # act <ref>: what an action or a command does
   local code=${1%%@*} arg=${1#*@} i ws dir cmd base pane
+  marks_n
+  if ((mc)); then case $code in close | interrupt | restart | write | rename) group_act "$code"; return ;; esac; fi
   case $code in
+    unselect) marks='|' notice='selection cleared'; to_browse ;;
+    selstate) for ((i = 0; i < ${#L_id[@]}; i++)); do [ "${L_state[i]}" = "$arg" ] && ! marked "${L_id[i]}" && marks+="${L_id[i]}|"; done; notice="every $arg lane selected"; to_browse ;;
     go) jump "$arg" ;;
     answer) notice="1 2 3 answer ${L_window[arg]}"; dirty=1 ;;
     output) # the empty rows under the last line dropped, so less opens on the output, not on a blank page
@@ -1067,6 +1309,13 @@ act() { # act <ref>: what an action or a command does
       tmux switch-client -t "$pane" \; select-window -t "$pane"
       exit 0
       ;;
+    up)
+      ws=$("$PITWALL" up --list --plain 2>/dev/null | awk -F '\t' -v n="$arg" '$1 == n { print $2; exit }')
+      run_inline sh -c '"$0" up "$1"; printf "\n  ⏎ to go there "; read -r _' "$PITWALL" "$arg"
+      [ -n "$ws" ] && tmux switch-client -t "=$ws" 2>/dev/null && exit 0
+      to_browse; load
+      ;;
+    upsave) notice=$("$PITWALL" up --save "$(here_ws)" 2>&1 | head -1); to_browse ;;
     otopen) opener "$(ot_web "${S_ev[arg]}")"; notice="opening «${S_title[arg]:0:40}»"; dirty=1 ;;
     otcopy)
       cmd=$(ot_web "${S_ev[arg]}"); tmux set-buffer -- "$cmd"
@@ -1100,6 +1349,21 @@ answer() { # ⏎ in a prompt
     rename) [ -n "$v" ] && tmux rename-window -t "$target" -- "$v"; notice="tab renamed: $v" ;;
     wsrename) [ -n "$v" ] && "$PITWALL" ws rename "$target" "${v//[^A-Za-z0-9._-]/-}" >/dev/null 2>&1; notice="workspace renamed: $v" ;;
     write) [ -n "$v" ] && tmux send-keys -t "$target" -l -- "$v" && tmux send-keys -t "$target" Enter && notice='sent' ;;
+    writesel) [ -n "$v" ] && { selected; for i in ${sel[@]+"${sel[@]}"}; do tmux send-keys -t "${L_id[i]}" -l -- "$v"; tmux send-keys -t "${L_id[i]}" Enter; done; marks='|' notice="sent to ${#sel[@]} agents"; } ;;
+    renamesel)
+      v=${v//[^A-Za-z0-9._-]/-}
+      if [ -n "$v" ]; then
+        local wid done_w=' '
+        selected
+        for i in ${sel[@]+"${sel[@]}"}; do
+          wid=$(tmux display -p -t "${L_id[i]}" '#{window_id}' 2>/dev/null) || continue
+          case $done_w in *" $wid "*) continue ;; esac
+          done_w+="$wid "
+          tmux rename-window -t "$wid" -- "$v-$(tmux display -p -t "$wid" '#{window_name}')"
+        done
+        marks='|' notice="renamed with $v-"
+      fi
+      ;;
     otconnect)
       [ -n "$v" ] && notice=$("$PITWALL" ot connect "${v/#\~/$HOME}" 2>&1 | head -1)
       ot_state=''; ot_start
@@ -1131,6 +1395,19 @@ confirmed() { # y in a confirmation
   local pane cmd dir
   case $prompt_do in
     close) tmux kill-pane -t "$target" 2>/dev/null; notice='lane closed' ;;
+    closesel) selected; for i in ${sel[@]+"${sel[@]}"}; do tmux kill-pane -t "${L_id[i]}" 2>/dev/null; done; marks='|' notice="${#sel[@]} lanes closed" ;;
+    restartsel)
+      local i n=0
+      selected
+      for i in ${sel[@]+"${sel[@]}"}; do
+        cmd=''
+        [ -n "${L_sid[i]}" ] && cmd=$("$PITWALL" _resume-cmd "${L_harness[i]}" "${L_sid[i]}" 2>/dev/null)
+        [ -n "$cmd" ] || continue
+        tmux respawn-pane -k -t "${L_id[i]}" -c "$(dir_of "$i")" "$cmd; exec \"\${SHELL:-/bin/sh}\"" 2>/dev/null && n=$((n + 1))
+      done
+      marks='|' notice="restarted $n of ${#sel[@]} agents (the others had no session to resume)"
+      [ "$n" = "${#sel[@]}" ] && notice="restarted $n agents"
+      ;;
     wsclose) notice=$("$PITWALL" ws close "$target" 2>&1 | head -1) ;;
     restart)
       pane=${target%%"$US"*} cmd=${target#*"$US"} dir=${cmd#*"$US"} cmd=${cmd%%"$US"*}
@@ -1164,7 +1441,8 @@ tab_actions() { # shift-tab or →: everything you can do with what is under the
 
 switch_view() { # tab: Lanes ⇄ OpenTimeline, each with its own cursor
   local keep=$cur_sig
-  if [ "$view" = lanes ]; then view=ot; else view=lanes; fi
+  case $view in lanes) view=ot ;; ot) view=usage ;; *) view=lanes ;; esac
+  [ "$view" = usage ] && { usage_tokens; load; }
   cur_sig=${other_sig:-} other_sig=$keep top=0 notice=''
   [ "$view" = ot ] && [ "$ot_state" != ok ] && ot_start
   to_browse
@@ -1199,7 +1477,7 @@ raw_tty
 printf '%s[?25l%s[?7l' "$E" "$E" # hide the cursor; clip long lines instead of wrapping them
 
 # bash 4+ reads with a fractional timeout, so the spinner turns; the macOS bash 3.2 refreshes once a second.
-if ((NEW4)); then FRAME=0.1 ESCWAIT=0.03 RELOAD=10; else FRAME=1 ESCWAIT=1 RELOAD=1; fi
+if ((NEW4)); then FRAME=0.1 ESCWAIT=0.05 RELOAD=10; else FRAME=1 ESCWAIT=1 RELOAD=1; fi
 
 # Start on the lane you opened the dashboard from: the pane behind the popup (PITWALL_FROM names another), else a
 # lane in the same window, else the top of the list.
@@ -1226,6 +1504,7 @@ while :; do
     ((stats_due && tick >= stats_due)) && stats_due=0 && stats_start
     ((now >= ot_next)) && ot_start
     load_poll
+    usage_poll
     if ((tick % RELOAD == 0)); then
       load_start
       peek
@@ -1253,6 +1532,7 @@ while :; do
   if [ ${#k} = 1 ] && [[ $k == [[:cntrl:]] ]] && [ "$k" != $'\b' ]; then # ctrl+letter: an action, even mid-search
     printf -v o '%d' "'$k"
     if ((o >= 1 && o <= 26)); then
+      if ((o == 21)) && [ "$mode" = browse ]; then query='up ' cur_sig='' top=0; build; continue; fi # ctrl-u: the recipes
       if ((o == 6)) && [ "$mode" = browse ]; then # ctrl-f: lanes by workspace, or by state; remembered
         if [ "$GROUP" = state ]; then GROUP=workspace; else GROUP=state; fi
         tmux set -g @pitwall_dash_group "$GROUP" 2>/dev/null

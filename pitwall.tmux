@@ -115,6 +115,10 @@ tmux set-hook -g 'client-attached[73]' "$CLEAR"
 # With renumber-windows on, a window moving out of a session closes its gap too, not only one that closes
 # (prefix . , the dashboard's move, pitwall move). Deferred: while the hook runs, the window is still linked.
 tmux set-hook -g 'window-unlinked[75]' "if -F '#{renumber-windows}' \"run-shell -b \\\"'$DIR/bin/pitwall' _reindex '#{hook_session_name}' '#{hook_window}'\\\"\""
+# A workspace saved as a recipe (pitwall up --save) stays current as its tabs change.
+SAVE="run-shell -b \"'$DIR/bin/pitwall' _autosave '#{?hook_session_name,#{hook_session_name},#{session_name}}'\""
+for h in after-new-window after-split-window window-unlinked; do tmux set-hook -g "${h}[77]" "$SAVE"; done
+tmux set-hook -gw 'window-renamed[77]' "$SAVE" \; set-hook -gp 'pane-exited[77]' "$SAVE" # a window's and a pane's own hooks
 [ "$(tmux show -gv renumber-windows)" = on ] && tmux run-shell -b "'$DIR/bin/pitwall' _reindex"
 
 # Board and jump. Not choose-tree: its j/k are compiled into tmux, and navigation here is Colemak (n/e).
