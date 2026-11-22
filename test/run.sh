@@ -62,6 +62,24 @@ eq "a quota refresh with nothing to show exits 0" "$(TMUX="$SOCK,0,0" "$ROOT/bin
 $T set -gu @pitwall-codexbar
 
 hook "$P1" Notification '{"notification_type":"permission_prompt"}'; eq "permission Notification → asking" "$(state s:one)" asking
+QP=$($T new-window -d -P -F '#{pane_id}' -t s: -n qa "printf '\\n  \$ pnpm release --tag v1\\n\\n  Allow command?  › 1. Yes   2. Yes, always   3. No\\n'; exec sleep 300"); sleep 0.3
+hook "$QP" PermissionRequest; sleep 1.2
+eq "a lane that asks keeps its question and its answers" "$($T display -p -t "$QP" '#{@pitwall_question}|#{@pitwall_choices}')" "Allow pnpm release --tag v1?|1 Yes · 2 Yes, always · 3 No"
+pw() { TMUX="$SOCK,0,0" "$ROOT/bin/pitwall" "$@"; }
+QR=$(pw ls | awk '$2 ~ /\/qa$/ { print $1 }')
+eq "the hook keeps today's ledger, and stats --today reads it" "$(pw stats --today --plain | awk -F '\t' -v p="$QP" '$1 == p { print ($4 >= 0 ? "ok" : "bad") }')" ok
+eq "ls --json carries an asking lane's question and choices, for agents" "$(pw ls --json | python3 -I -c 'import json,sys; l=[x for x in json.load(sys.stdin) if x["window"]=="qa"][0]; print(l["question"], "|", l["choices"])')" "Allow pnpm release --tag v1? | 1 Yes · 2 Yes, always · 3 No"
+if command -v nvim >/dev/null; then # the Neovim side reads the same lanes: an asking one shows in its status
+  NV=$(TMUX="$SOCK,0,0" PATH="$ROOT/bin:$PATH" nvim --headless --clean --cmd "set rtp^=$ROOT" -c "lua local p = require('pitwall'); p.setup(); vim.wait(3000, function() return p.status() ~= '' end); io.write(p.status() .. ' ' .. vim.fn.exists(':Pitwall'))" -c qa 2>&1 | tail -1)
+  eq "in Neovim, :Pitwall exists and the status counts the lanes that ask" "$(printf '%s' "$NV" | grep -c '◆[0-9].* 2')" 1
+fi
+pw answer "$QR" 1 >/dev/null; sleep 0.3
+eq "answer sends one key to a lane that asks" "$($T capture-pane -p -t "$QP" | grep -v '^ *$' | tail -1)" 1
+WR=$(pw ls | awk '$2 ~ /\/two$/ { print $1 }')
+eq "and refuses a lane that does not ask" "$(pw answer "$WR" 1 2>&1 | grep -c 'is not asking')" 1
+hook "$QP" PostToolUse
+eq "and drops them once it moves on" "$($T display -p -t "$QP" '#{@pitwall_question}')" ""
+$T kill-pane -t "$QP"
 hook "$P1" SessionEnd; sleep 2.6; eq "SessionEnd, the pane back at its shell → gone" "$(state s:one)" gone
 
 $T set -pu -t "$P1" @pitwall_state \; select-pane -t "$P1" -T '⠙ Working on it | dir'
@@ -156,7 +174,7 @@ eq "an agent it does not know waits for @pitwall-resume-<agent>" "$(pw restore -
 rm -f "$LANES/s-grok" "$LANES/s-myst"
 
 # --- usage limits, from a synthetic CodexBar payload -------------------------------------------------------
-quota() { printf '%s' "$1" | "$ROOT/bin/pitwall-quota" 1800000000 | tail -1; }
+quota() { printf '%s' "$1" | "$ROOT/bin/pitwall-quota" 1800000000 | sed -n 2p; }
 eq "limits read as session and week" \
   "$(quota '[{"provider":"claude","usage":{"primary":{"usedPercent":7},"secondary":{"usedPercent":34}}}]')" "claude 5h 7% · wk 34%"
 eq "each window shows the time to its reset" \
@@ -266,9 +284,10 @@ eq "switching back gives the theme its status line again" "$($T show -gv status-
 eq "and tmux its own first line" "$($T show -gv 'status-format[0]' | grep -c pitwall-tabs)" 0
 
 # --- install: Hermes's YAML gets a block appended, never rewritten -----------------------------------------------
-H=$(mktemp -d); ISOLATED="$ISOLATED $H"; mkdir -p "$H/.claude" "$H/.codex" "$H/.hermes"
+H=$(mktemp -d); ISOLATED="$ISOLATED $H"; mkdir -p "$H/.claude/skills" "$H/.codex" "$H/.hermes"
 printf '# my notes\nmodel: x\n' >"$H/.hermes/config.yaml"
 HOME=$H HERMES_HOME= "$ROOT/bin/pitwall" install --write >/dev/null
+eq "install links the agents' skill where an agent keeps skills" "$(readlink "$H/.claude/skills/pitwall" 2>/dev/null | sed 's|.*/skills/|skills/|')" skills/pitwall
 eq "install appends seven Hermes hooks, tool calls included" "$(grep -c 'pitwall-hook .* hermes$' "$H/.hermes/config.yaml")" 7
 eq "and keeps what was there, comments too" "$(head -2 "$H/.hermes/config.yaml" | tr '\n' ' ')" "# my notes model: x "
 HOME=$H HERMES_HOME= "$ROOT/bin/pitwall" install --write >/dev/null
@@ -278,6 +297,38 @@ HOME=$H HERMES_HOME= "$ROOT/bin/pitwall" install --write >/dev/null
 eq "an older install, its block last in the file, gets the tool-call hook added at the end" "$(grep -c 'pitwall-hook' "$H/.hermes/config.yaml") $(tail -3 "$H/.hermes/config.yaml" | head -1)" "7   post_tool_call:"
 printf 'hooks:\n  pre_tool_call: []\n' >"$H/.hermes/config.yaml"
 eq "a config with its own hooks: block is left alone, the lines printed" "$(HOME=$H HERMES_HOME= "$ROOT/bin/pitwall" install --write | grep -c 'add these under it')$(grep -c pitwall "$H/.hermes/config.yaml")" 10
+
+# --- pitwall up: a workspace from a small file; what is there stays, what is missing comes back ------------------
+UPD="$XDG_CONFIG_HOME/pitwall/up"; mkdir -p "$UPD"; UPJ=$(mktemp -d "$ROOT/.up.XXXXXX"); ISOLATED="$ISOLATED $UPJ"; mkdir -p "$UPJ/sub"
+printf '# a test recipe\nworkspace = "uplab"\ndir = "%s"\n\n[[tab]]\nname = "one"\nrun = "sleep 300"   # a comment\n\n[[tab]]\nname = "two"\ndir = "sub"\nrun = "sleep 301"\n[[tab.pane]]\nrun = "sleep 302"\n' "$UPJ" >"$UPD/demo.toml"
+up() { TMUX="$SOCK,0,0" "$ROOT/bin/pitwall" up "$@" </dev/null; }
+up --dry demo >/dev/null
+eq "up --dry makes nothing" "$($T has-session -t '=uplab' 2>/dev/null && echo made || echo none)" none
+up demo >/dev/null
+eq "up makes the workspace and its tabs, a tab's dir relative to the workspace's" "$($T list-windows -t '=uplab' -F '#W' | tr '\n' ' ')$($T display -p -t '=uplab:two' '#{window_panes}')" "one two 2"
+eq "and a relative dir lands in the workspace's folder" "$($T display -p -t '=uplab:two.1' '#{pane_start_path}' | sed "s|.*/||")" sub
+eq "again, it keeps what is there and opens nothing" "$(up demo | grep -c 'already up') $($T list-windows -t '=uplab' | wc -l | tr -d ' ')" "2 2"
+$T kill-window -t '=uplab:one'
+eq "a tab closed by mistake comes back, alone" "$(up demo | grep -c '✓ one') $($T list-windows -t '=uplab' -F '#W' | sort | tr '\n' ' ')" "1 one two "
+eq "up --list says it is up" "$(TMUX="$SOCK,0,0" "$ROOT/bin/pitwall" up --list | awk '$1 == "demo" { print $5 }')" up
+printf 'name = "repo"\nworkspace = "uprepo"\n[[tab]] name = "r1"\nrun = "sleep 303"\n' >"$UPJ/.pitwall.toml"
+up "$UPJ" >/dev/null 2>&1
+eq "a repo's recipe it has not run before needs a yes" "$($T has-session -t '=uprepo' 2>/dev/null && echo ran || echo asked)" asked
+up --yes "$UPJ" >/dev/null; $T kill-session -t '=uprepo'; up repo >/dev/null 2>&1
+eq "once trusted it runs, and is known by its name" "$($T list-windows -t '=uprepo' -F '#W' 2>/dev/null)" r1
+i=0; until [ "$($T display -p -t '=uplab:two.2' '#{pane_current_command}')" = sleep ] || [ $i -ge 60 ]; do sleep 0.1; i=$((i + 1)); done
+TMUX="$SOCK,0,0" "$ROOT/bin/pitwall" up --save uplab >/dev/null
+eq "up --save writes the recipe back from the open workspace" "$(grep -c '^\[\[tab\]\]' "$UPD/uplab.toml") $(grep -c 'run = "sleep 302"' "$UPD/uplab.toml")" "2 1"
+$T new-window -d -t '=uplab:' -n three "sleep 304"
+i=0; until grep -q 'name = "three"' "$UPD/uplab.toml" || [ $i -ge 80 ]; do sleep 0.1; i=$((i + 1)); done
+eq "a saved recipe follows the workspace: a tab opened is written in" "$(grep -c 'name = "three"' "$UPD/uplab.toml")" 1
+printf '# mine now\n' >>"$UPD/uplab.toml"; $T new-window -d -t '=uplab:' -n four "sleep 305"; sleep 3
+eq "edited by hand, it is left alone" "$(grep -c 'name = "four"' "$UPD/uplab.toml") $(tail -1 "$UPD/uplab.toml")" "0 # mine now"
+$T kill-session -t '=uplab' \; kill-session -t '=uprepo'
+printf 'workspace = "upses"\n[[tab]]\nname = "a"\nagent = "fakeagent"\nsession = "s-42"\n' >"$UPD/ses.toml"
+$T set -g @pitwall-resume-fakeagent 'fakeagent --resume {id}'
+eq "a saved session is the one resumed" "$(up --dry ses | grep -c 'fakeagent, resumed')" 1
+$T set -gu @pitwall-resume-fakeagent
 
 # --- the dashboard, driven like a person would: keys in, screen out ---------------------------------------------
 # Its own server with four known lanes (alpha, beta, gamma in lab; delta in oss), the dashboard in a pane of its own.
@@ -331,10 +382,15 @@ keys C-n
 eq "down skips the task line, to the next lane" "$(screen | grep '▌' | grep -cE '[○◆✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] ')" 1
 keys C-f
 until_screen '^ *WORKING' && eq "ctrl-f groups the lanes by state" "$(screen | grep -cE '^ *(WORKING|IDLE) *│')$(screen | grep -cE '^ *LAB *│')" 20
-keys C-f
+sleep 0.5; keys C-f # once the first redraw is on screen
 until_screen '^ *LAB ' && eq "and again by workspace, remembered for the next opening" "$($B show -gv @pitwall_dash_group)" workspace
 keys Tab
 until_screen 'OPENTIMELINE IS NOT ANSWERING' && eq "tab opens OpenTimeline, which says when its server does not answer, and what to do" "$(screen | grep -c 'Try again\|Open the OpenTimeline repo')" 2
+keys Tab
+until_screen 'SESSIONS' && eq "tab again: Usage, every lane in the columns of its header" "$(screen | grep -c 'LANE  *AGENT  *MODEL  *CTX  *TOKENS  *CACHED  *COST  *TURNS  *TODAY  *WAITED') $(screen | grep -cE '(alpha|beta|gamma|delta)  +codex')" "1 4"
+keys -l gam
+until_screen 'these lanes' && eq "in Usage the search finds sessions, and the total follows" "$(screen | grep -cE '(alpha|beta|gamma|delta)  +codex')" 1
+esc
 keys Tab
 until_screen 'WAITING FOR YOU' && eq "and tab comes back to the lanes" "$(lanes_shown)" 4
 
@@ -354,7 +410,8 @@ eq "then the selection" "$(screen | grep -c 'selected')" 0
 keys -l alpha; keys BTab; keys -l v; keys -l beta; keys C-v
 until_screen '● ○ beta' && eq "ctrl-v selects the lane mid-search, and the search stays" "$(screen | grep -c '❯ beta') $(row beta | grep -c '●')" "1 1"
 esc
-keys -l gamma; keys BTab; keys -l m
+keys -l gamma; keys BTab
+until_screen 'ACTIONS ON GAMMA' && keys -l m
 until_screen 'MOVE 2 LANES TO' && keys -l parked && keys Enter
 sleep 0.8
 eq "move takes exactly the selection" "$($B list-windows -t '=parked' -F '#W' | sort | tr '\n' ' ')" "alpha beta "
@@ -372,6 +429,9 @@ keys -l undo
 until_screen 'Undo the last move (2 tabs back)' && keys Enter
 sleep 0.8
 eq "u puts the tabs of the last move back" "$($B list-windows -t '=lab' -F '#W' | sort | tr '\n' ' ')" "alpha beta gam2 "
+keys -l up
+until_screen 'UP A WORKSPACE' && eq "«up» lists the recipes, with how much of each is up" "$(screen | grep -c 'demo .*uplab · 2 tabs · down')" 1
+esc
 keys -l 'rename del'
 until_screen 'SUGGESTED' && eq "actions are searchable: «rename del» offers renaming delta first" "$(screen | grep '▌' | grep -c 'Rename tab · delta')" 1
 esc
@@ -380,6 +440,17 @@ keys -l delta; keys BTab; keys -l x
 until_screen 'close DELTA' && keys -l y
 sleep 0.5
 eq "x closes the lane, once you say y" "$($B display -p -t "$D" '#{pane_id}' 2>/dev/null | grep -c .)" 0
+
+# A selection takes the group actions: two lanes picked, ctrl-x closes both after a y.
+$B new-window -d -t lab -n eps \; new-window -d -t lab -n zet; lane lab:eps idle; lane lab:zet idle; sleep 1.4
+keys -l 'select idle'
+until_screen 'Select every idle lane' && eq "«select idle» offers to select every idle lane" "$(screen | grep '▌' | grep -c 'Select every idle lane')" 1
+esc
+keys -l eps; keys C-v; esc; keys -l zet; keys C-v; esc
+keys C-x
+until_screen 'close 2 lanes' && keys -l y
+sleep 0.8
+eq "ctrl-x with two lanes selected closes both, once you say y" "$($B list-windows -t '=lab' -F '#W' | grep -c 'eps\|zet') $(screen | grep -c selected)" "0 0"
 
 # Opened from a lane, the dashboard starts on it; M moves it and takes you along, closing the dashboard.
 G=$($B display -p -t lab:gam2 '#{pane_id}')

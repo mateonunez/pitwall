@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """pitwall-stats <harness> <transcript> [session-id]: one lane's metrics from its agent's transcript.
 
-Prints one tab-separated line: model, context %, context tokens, raw total tokens, total tokens, output tokens.
+Prints one tab-separated line: model, context %, context tokens, raw total tokens, total tokens, output tokens,
+then input, cache-write, cache-read and output tokens (raw), the API-equivalent cost in dollars (empty when the
+model's price is unknown), the number of turns, and the epochs of the first and last of them.
 Transcripts grow to tens of megabytes, so it reads only the bytes added since its last run and keeps running
 sums in ~/.cache/pitwall/stats. Context % is approximate: it compares the last turn's prompt with the window.
 """
@@ -21,6 +23,48 @@ def human(n):
     return str(n)
 
 
+# API list prices per million tokens: input, output, cache write (5 minutes), cache read. Claude's from Anthropic's
+# published pricing (cache writes 1.25x input; reads 0.025x on Fable / Mythos 5.1+, 0.05x on Opus and Sonnet 5.5,
+# 0.1x elsewhere). Others, and overrides, from ~/.config/pitwall/prices: "<model prefix> <in> <out> <write> <read>".
+PRICES = [
+    ("fable-5-2", 8, 40, 10, 0.20), ("mythos-5-2", 8, 40, 10, 0.20),
+    ("fable-5-1", 10, 50, 12.5, 0.25), ("mythos-5-1", 10, 50, 12.5, 0.25), ("fable-5", 10, 50, 12.5, 1.0),
+    ("opus-5-5", 4, 20, 5, 0.20), ("opus-5", 5, 25, 6.25, 0.5), ("opus-4", 5, 25, 6.25, 0.5),
+    ("sonnet-5-5", 2, 10, 2.5, 0.10), ("sonnet-5", 2, 10, 2.5, 0.2), ("sonnet-4", 3, 15, 3.75, 0.3),
+    ("haiku-5-5", 0.10, 0.50, 0.125, 0.01), ("haiku-4", 1, 5, 1.25, 0.1),
+]
+
+
+def prices():
+    table = list(PRICES)
+    path = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "pitwall", "prices")
+    try:
+        with open(path) as f:
+            for line in f:
+                parts = line.split("#")[0].split()
+                if len(parts) == 5:
+                    table.insert(0, (parts[0], *map(float, parts[1:])))
+    except (OSError, ValueError):
+        pass
+    return table
+
+
+def price_of(model, table):
+    m = (model or "").removeprefix("claude-").split("[")[0]
+    for prefix, *rates in table:  # the longest prefix that matches: the table lists specific ids first
+        if m.startswith(prefix):
+            return rates
+    return None
+
+
+def epoch(ts):
+    try:
+        from datetime import datetime
+        return int(datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp())
+    except (TypeError, ValueError):
+        return 0
+
+
 def find_codex(sid):
     if not sid:
         return ""
@@ -34,13 +78,15 @@ def main():
     if harness == "codex" and not (path and os.path.exists(path)):
         path = find_codex(sid)
     if not path or not os.path.exists(path):
-        print("\t\t\t\t\t")
+        print("\t" * 13)
         return
 
     cache_dir = os.path.expanduser("~/.cache/pitwall/stats")
     os.makedirs(cache_dir, exist_ok=True)
     cache_path = os.path.join(cache_dir, hashlib.sha1(path.encode()).hexdigest())
-    state = {"offset": 0, "total": 0, "out": 0, "ctx": 0, "window": 0, "model": "", "last_id": ""}
+    state = {"offset": 0, "total": 0, "out": 0, "ctx": 0, "window": 0, "model": "", "last_id": "",
+             "inp": 0, "cw": 0, "cr": 0, "o": 0, "cost": 0.0, "priced": True, "turns": 0, "first": 0, "last": 0}
+    table = prices()
     try:
         with open(cache_path) as f:
             state.update(json.load(f))
@@ -48,7 +94,7 @@ def main():
         pass
     size = os.path.getsize(path)
     if size < state["offset"]:  # the file was replaced: start over
-        state.update(offset=0, total=0, out=0, ctx=0)
+        state.update(offset=0, total=0, out=0, ctx=0, inp=0, cw=0, cr=0, o=0, cost=0.0, priced=True, turns=0, first=0, last=0)
 
     with open(path, "rb") as f:
         f.seek(state["offset"])
@@ -67,12 +113,25 @@ def main():
             if msg.get("id") and msg["id"] == state["last_id"]:
                 continue  # one reply is logged once per content block, with the same usage
             state["last_id"] = msg.get("id", "")
-            prompt = sum(usage.get(k) or 0 for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
+            inp, cw, cr = (usage.get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+            prompt = inp + cw + cr
             out = usage.get("output_tokens") or 0
             state["total"] += prompt + out
             state["out"] += out
             state["ctx"] = prompt
             state["model"] = msg.get("model") or state["model"]
+            state["inp"] += inp; state["cw"] += cw; state["cr"] += cr; state["o"] += out; state["turns"] += 1
+            t = epoch(entry.get("timestamp"))
+            if t:
+                state["first"] = state["first"] or t
+                state["last"] = t
+            rates = price_of(msg.get("model") or state["model"], table)  # each reply at its own model's price
+            if rates:
+                # a 1-hour cache write costs 2x input (Claude Code uses them), a 5-minute one the table's 1.25x
+                hour = (usage.get("cache_creation") or {}).get("ephemeral_1h_input_tokens") or 0
+                state["cost"] += (inp * rates[0] + out * rates[1] + (cw - hour) * rates[2] + hour * rates[0] * 2 + cr * rates[3]) / 1_000_000
+            elif inp + out + cw + cr and not (msg.get("model") or "").startswith("<"):  # <synthetic> replies cost nothing
+                state["priced"] = False
         elif harness == "codex":
             payload = entry.get("payload") or {}
             if entry.get("type") == "turn_context" and payload.get("model"):
@@ -84,6 +143,15 @@ def main():
                 state["out"] = (total.get("output_tokens") or 0) + (total.get("reasoning_output_tokens") or 0)
                 state["ctx"] = last.get("input_tokens") or state["ctx"]
                 state["window"] = info.get("model_context_window") or state["window"]
+                cached = total.get("cached_input_tokens") or 0
+                state["inp"] = (total.get("input_tokens") or 0) - cached
+                state["cr"] = cached
+                state["o"] = state["out"]
+                state["turns"] += 1
+            t = epoch(entry.get("timestamp"))
+            if t:
+                state["first"] = state["first"] or t
+                state["last"] = t
     state["offset"] += end
     try:
         with open(cache_path + ".tmp", "w") as f:
@@ -95,7 +163,13 @@ def main():
     window = state["window"] or (1_000_000 if state["ctx"] > 200_000 or "[1m]" in state["model"] else 200_000)
     pct = round(100 * state["ctx"] / window) if state["ctx"] else ""
     model = state["model"].removeprefix("claude-")
-    print(f"{model}\t{pct}\t{state['ctx'] or ''}\t{state['total'] or ''}\t{human(state['total'])}\t{human(state['out'])}")
+    if harness == "codex":  # Codex keeps totals: price them at the end, when the model's price is known
+        rates = price_of(state["model"], table)
+        state["cost"] = (state["inp"] * rates[0] + state["o"] * rates[1] + state["cr"] * rates[3]) / 1_000_000 if rates else 0
+        state["priced"] = bool(rates)
+    cost = f"{state['cost']:.2f}" if state["priced"] and state["turns"] else ""
+    print(f"{model}\t{pct}\t{state['ctx'] or ''}\t{state['total'] or ''}\t{human(state['total'])}\t{human(state['out'])}"
+          f"\t{state['inp']}\t{state['cw']}\t{state['cr']}\t{state['o']}\t{cost}\t{state['turns']}\t{state['first']}\t{state['last']}")
 
 
 if __name__ == "__main__":

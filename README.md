@@ -104,7 +104,7 @@ Restore already knows how to resume grok, opencode and pi. For any other agent, 
   - `○` when it rests, and `✗` when it has gone.
 
   I slip these into the format your theme already has, so your theme stays yours.
-- **The dashboard** (`prefix Space`), one place for everything. Start typing to find a lane, a workspace or an action. A lane that asks can be answered right there with `1` `2` `3`, without leaving the dashboard. The actions you use most are one `ctrl` key away, even while you search: `ctrl-d` the worktree's diff in lumen, `ctrl-o` nvim in its folder, `ctrl-g` lazygit, `ctrl-p` its PR, `ctrl-s` write to the agent, `ctrl-w` move it to a workspace (and `undo` puts it back). `shift-tab` lists them all, with reading its whole output, interrupting or restarting the agent, and more. It opens on the lane you were in, and shows who waits for you first, with what each agent is on.
+- **The dashboard** (`prefix Space`), one place for everything. Start typing to find a lane, a workspace or an action. A lane that asks can be answered right there with `1` `2` `3`, without leaving the dashboard. The actions you use most are one `ctrl` key away, even while you search: `ctrl-d` the worktree's diff in lumen, `ctrl-o` nvim in its folder, `ctrl-g` lazygit, `ctrl-p` its PR, `ctrl-s` write to the agent, `ctrl-w` move it to a workspace (and `undo` puts it back). `shift-tab` lists them all, with reading its whole output, interrupting or restarting the agent, and more. It opens on the lane you were in, and shows who waits for you first: a lane that asks shows its question on its row (`Allow pnpm release --tag v0.2.0?  1 Yes · 2 Yes, always · 3 No`), the others what their agent is on. Select a few lanes (`ctrl-v`, or type `select idle`) and `ctrl-x` closes them all, `ctrl-w` moves them, `ctrl-s` writes the same message to each.
 - **The jump** (`prefix a`) takes you to the next lane that is asking or done.
 - **Several agents in one window.** Each pane is its own lane (`ait.1`, `ait.2`), and the window shows the most urgent one.
 - **Names that mean something.** A window running Claude Code would show up as `2.1.323`; I name it after the agent's folder instead.
@@ -113,7 +113,47 @@ Restore already knows how to resume grok, opencode and pi. For any other agent, 
 - **Context on every lane.** The dashboard's preview shows the model, how full the context is and the tokens used. Your Claude and Codex usage limits sit in the status line with the time left to each reset (`claude 5h 8% ↻4h · wk 34% ↻5d`), read from [CodexBar](https://github.com/steipete/CodexBar). They turn amber at 80%.
 - **Lanes as worktrees.** `pitwall new fix-login` creates a worktree with [gwm](https://github.com/kbrdn1/gwm), opens a window there and starts your agent. `pitwall done @3` shows the diff in [lumen](https://github.com/jnsahaj/lumen) and removes the worktree if you confirm.
 - **Beyond the terminal.** Connect an [OpenTimeline](https://github.com/mateonunez/opentimeline) seat with `pitwall ot connect <token-file>`: a lane that starts asking shows up in its Needs you and clears when the lane moves on. Only the state, the agent and its metrics are sent, never prompts or task titles. The dashboard's second view (`tab`) reads the last days of stories back, as a timeline per project, and links each story to its lane.
-- **Made for agents as well.** `pitwall ls` prints one line per lane with a short ref (`@1 lab/opentimeline asking 3m codex Cut the 0.2.0 release`), `--json` for scripts, and `pitwall peek @1` shows a lane's last lines.
+- **Made for agents as well.** `pitwall ls` prints one line per lane with a short ref (`@1 lab/opentimeline asking 3m codex Allow pnpm release --tag v0.2.0?`), `--json` for scripts (with each asking lane's question and choices), `pitwall peek @1` shows a lane's last lines, and `pitwall answer @1 1` / `pitwall send @1 "…"` act on one. `pitwall install --write` also links a skill (`skills/pitwall`) into Claude Code, Codex and Hermes, so an orchestrator reads the fleet, reports who waits on you and what they ask, and acts on a lane only after you say yes.
+
+## A workspace from a small file
+
+`pitwall up` brings a project back in one command: its tabs, agents, dev servers and nvim. Put a `.pitwall.toml` in the repo, or a `<name>.toml` in `~/.config/pitwall/up/`:
+
+```toml
+workspace = "lab"            # the tmux session, made if missing
+
+[[tab]]
+name  = "ait"
+agent = "claude"             # resumes its last session in this folder
+
+[[tab]]
+name = "gateway"
+run  = "pnpm --filter gateway dev"
+
+[[tab]]
+name     = "linear"
+agent    = "codex"
+worktree = "linear-sync"     # a gwm worktree, made if missing
+```
+
+- `pitwall up ait` (or `pitwall up` inside the repo) opens what is missing and keeps what is already there, so running it again after closing a tab brings back only that tab.
+- A tab can also have `dir` (relative to the workspace's folder), `fresh = true` (a new agent instead of the last session), and `[[tab.pane]]` for more panes. `[[include]] path = "…"` adds another project's tabs.
+- `pitwall up --save lab` writes the recipe from the workspace you have open: each tab's folder, and its agent (with its `session`, so each tab resumes its own conversation) or running command. From then on it stays current by itself: open, close or rename a tab, or start a new agent session, and the recipe follows. If you edit the file by hand, it stays exactly as you left it.
+- `--dry` shows what it would do, and `--list` shows the recipes and how much of each is up. In the dashboard, type `up` (or press `ctrl-u`).
+- A recipe from a repo runs commands, so the first time, and again after it changes, pitwall asks before running it. Recipes in your own `~/.config` never ask.
+
+## In Neovim
+
+The repo is also a Neovim plugin (`lua/pitwall`). With lazy.nvim:
+
+```lua
+{ "mateonunez/pitwall", event = "VeryLazy", config = function() require("pitwall").setup() end,
+  keys = { { "<leader>pp", "<cmd>Pitwall<cr>", desc = "pitwall: lanes" } } }
+```
+
+- **`:Pitwall` picks a lane.** It uses Telescope when installed, with the lane's screen as the preview. `⏎` takes you to the lane in tmux, `<C-f>` opens its folder in Neovim (a tab-local `cd`, then find files), and `1` `2` `3` answer it when it asks, after a confirm.
+- **`:PitwallCd`** moves this tab into a lane's folder, its worktree.
+- **`require("pitwall").status()`** returns `◆2 ✓1` for your statusline, refreshed in the background.
 
 ## Tabs, if your status line is full
 
@@ -143,10 +183,12 @@ It works like a command palette: you type, it finds. Each lane shows what its ag
 | `space` | Read the lane's whole output, in `less` (with the search empty) |
 | `shift-tab` or `→` | Every action on what is under the cursor, each on one key (and `n` `e` to move); besides the ones above: `D` the branch's diff against its base · `M` move and go there · `a` new lane (claude, codex, hermes) · `i` interrupt · `R` restart on the same session |
 | `undo` | Type it: the command that puts the tabs of the last move back |
-| `tab` | The other view: Lanes, OpenTimeline |
+| `tab` | The next view: Lanes, OpenTimeline, Usage |
 | `ctrl-f` | Lanes by workspace, or by state (working, idle, gone), remembered for the next time |
 | `esc` or `←` | Back: the actions, then the search, then the selection, then close (`ctrl-c` closes from anywhere) |
 | `?` | Every key (with the search empty) |
+
+**Usage, the third view.** Your Claude and Codex limits are shown with a bar, the time to each reset, and the week's pace: on pace, or how long it lasts at this rate. Each session gets a row with aligned columns: its agent, model, context used, tokens, the share read from the cache, its cost, turns, and today's time working and waiting on you (amber past ten minutes), with a total for all lanes. On the right, the session under the cursor in detail: tokens by kind, cost in total, per turn and per day, when it started and how long it has run. Cost is the API-list equivalent, from Anthropic's published prices for Claude models (1-hour cache writes included). For other agents add a line to `~/.config/pitwall/prices`, such as `gpt-6.2 <input> <output> <cache-write> <cache-read>` per million tokens; until then they show `—`. With `@pitwall-system on` you also get the machine's cpu and memory over the last two minutes. `pitwall stats --today` prints the same day per lane in a terminal.
 
 **OpenTimeline, inside the dashboard.** With a seat connected, `tab` shows the last seven days of stories, grouped by project, with what needs you (a `blocker`) first. On the right are the story's latest updates and the lanes it belongs with: `⏎` opens it in the browser, and `ctrl-g` takes you to its lane. When the server does not answer, the view says so and offers to start it, to ask your agent to bring it up, or to download it, and it retries on its own.
 
@@ -159,17 +201,19 @@ Selections are careful: they follow lanes as they re-sort, selected lanes the se
 | `pitwall ls [--json]` | Every lane, the ones that need you first |
 | `pitwall peek @N [lines]` | The last lines of a lane |
 | `pitwall go @N` · `pitwall next` | Go to a lane · to the next one that needs you |
+| `pitwall answer @N <1\|2\|3>` · `pitwall send @N <text>` | Answer a lane that asks (never one that works) · write to a lane's agent |
 | `pitwall dash` | The dashboard, outside a popup |
-| `pitwall stats [@N]` | Model, context and tokens per lane |
+| `pitwall stats [@N]` · `--today` | Model, context and tokens per lane · today's time working and waiting on you |
 | `pitwall quota [--refresh]` | Claude and Codex usage limits |
 | `pitwall saved` | The agents I can bring back |
 | `pitwall restore [--dry\|--all]` | Bring them back, each resumed |
 | `pitwall forget <id>` | Drop a saved agent |
 | `pitwall ws` | Workspaces; also `new <name> [dir]`, `go`, `rename <old> <new>`, `close <name>` |
+| `pitwall up [name] [--dry]` · `--list` · `--save [ws]` | A workspace from its recipe (only what is missing) · the recipes · write one from an open workspace |
 | `pitwall move <@N\|window> <workspace>` | Move a lane, agents still running, to a workspace (created if new) |
 | `pitwall new <name> [--agent codex]` · `pitwall done @N` | Worktree, window and agent in one go · review and clean up |
 | `pitwall ot connect <token> [--url URL]` · `pitwall ot bell <token>` | OpenTimeline signals · its Needs you count in the status line |
-| `pitwall install [--write]` | Hooks for Claude Code, Codex and Hermes |
+| `pitwall install [--write]` | Hooks for Claude Code, Codex and Hermes, and the agents' skill |
 | `pitwall doctor` | What is missing |
 | `pitwall demo [stop]` | A throwaway server with fake lanes |
 | `pitwall keys` | Every key |
@@ -187,8 +231,9 @@ Set them in your tmux config before the plugin line.
 | `@pitwall-quota` | `on` | Usage limits in the status line |
 | `@pitwall-codexbar` | the CLI inside CodexBar.app | Path to `CodexBarCLI` |
 | `@pitwall-urgent-after` | `600` | Seconds of asking before a lane turns red; `0` turns it off |
-| `@pitwall-toast` | `on` | A short message when a lane starts asking or finishes |
+| `@pitwall-toast` | `on` | A short message when a lane starts asking (with its question) or finishes |
 | `@pitwall-rename` | `on` | Name agent windows after their folder |
+| `@pitwall-up-autosave` | `on` | Keep recipes written by `pitwall up --save` current as their workspace changes |
 | `@pitwall-agent` | `claude` | The agent `pitwall new` and the dashboard start |
 | `@pitwall-ot-dir` · `-ot-start` | `~/opentimeline` · `pnpm dev` | Where OpenTimeline lives on this machine, and how the dashboard starts it |
 | `@pitwall-ot-web` | the API's address, `4430` for `4431` | OpenTimeline's web app, for links to stories |
@@ -229,7 +274,7 @@ Some agents run their hooks outside tmux: Codex from a shared daemon, Hermes fro
 
 ## What's next
 
-Workspace recipes (`pitwall up`), lanes in nvim, metrics over time, and a skill so agents learn to read the fleet. The reasoning is in [docs/roadmap.md](docs/roadmap.md).
+What comes next, and why, is in [docs/roadmap.md](docs/roadmap.md).
 
 ## Develop
 

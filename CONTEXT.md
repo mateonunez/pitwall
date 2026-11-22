@@ -9,6 +9,7 @@ The words pitwall uses, and only those.
   - `done`: the agent finished a turn while you were in another window. It stays `done` until you visit the lane: the unread mark.
   - `idle`: finished and already seen, or never started.
   - `gone`: the agent exited; the window has a plain shell.
+- **Question**: what an asking lane asks, read off its screen when it starts asking (`Allow pnpm release?`) with its numbered answers; dropped once it moves on.
 - **Urgent**: an `asking` lane that has waited longer than `@pitwall-urgent-after` (ten minutes). Not a state of its own: a mark that clears when the lane moves on.
 - **Workspace**: a tmux session, holding the windows of one project or one kind of work. Moving a lane between workspaces moves its window; its agents keep running.
 - **Search**: what you type in the dashboard; every word must appear in a lane, a workspace, an action or a command. Words that start an action's name (`rename`, `diff`, `move`) and words that find a lane suggest that action on that lane. With a leading `/`, the text searched in the lanes' recent output.
@@ -17,7 +18,9 @@ The words pitwall uses, and only those.
 - **Action**: something you can do with what is under the cursor, listed by `shift-tab`, each on one key; the most used also run with `ctrl` + their key, even mid-search.
 - **View**: what the dashboard lists, switched with `tab`: Lanes, or OpenTimeline (the seat's last days of stories, by project).
 - **Story**: an OpenTimeline conversation. It belongs with a lane when the lane's tab name appears in its project or title.
+- **Recipe**: a workspace written down for `pitwall up`: its tabs, and what each runs (an agent, a command, a worktree). In a repo's `.pitwall.toml` or `~/.config/pitwall/up/<name>.toml`.
 - **Ref**: the short handle `@1`, `@2`… that `pitwall ls` prints, valid until the next `ls`. Agents act on refs, not on pane ids.
+- **Ledger**: one line per lane state change, a file a day under `~/.local/state/pitwall/ledger/`; it tells how long each lane worked and waited on you.
 - **Seat**: the OpenTimeline system identity pitwall reports signals with. It has `read` and `signal` only.
 - **Record**: one file per agent session in `~/.local/state/pitwall/lanes/`: its agent, session id, directory, and where it lived (session, window, pane, tmux server). Written by the hook, read by restore.
 - **Restorable**: a record whose tmux server is gone. On a live server, a lane without its agent was closed on purpose and stays closed.

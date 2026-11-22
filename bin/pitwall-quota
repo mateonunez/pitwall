@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pitwall-quota [now]: CodexBar's usage JSON on stdin → two lines: a tmux-styled status segment, then plain text.
+"""pitwall-quota [now]: CodexBar's usage JSON on stdin → three lines: a tmux-styled status segment, plain text, data.
 
 Each provider reads `claude 5h 7% ↻3h · wk 34% ↻5d`: each window's use and the time left to its reset. A number
 turns white at 50%, amber at 80%, red at 95%; a weekly use on course to run out before its reset is amber too.
@@ -37,7 +37,7 @@ def main():
         data = json.load(sys.stdin)
     except ValueError:
         return
-    styled, plain = [], []
+    styled, plain, rows = [], [], []
     for p in data if isinstance(data, list) else [data]:
         usage = p.get("usage") or {}
         windows = [(usage.get(key) or {}, unit) for key, unit in (("primary", "5h"), ("secondary", "wk"))]
@@ -53,6 +53,7 @@ def main():
             if unit == "wk" and short and tint in (MUTED, TEXT):
                 tint = AMBER  # on course to run out before the reset
             left = until(w.get("resetsAt"), now)
+            rows.append(f"{name}:{unit}:{pct}:{int(now + left) if left is not None else 0}:{'short' if unit == 'wk' and short else 'ok'}")
             reset = f" ↻{span(left)}" if left is not None else ""
             s_parts.append(f"#[fg={DIM}]{unit} #[fg={tint}]{pct}%#[fg={DIM}]{reset}")
             p_parts.append(f"{unit} {pct}%{reset}")
@@ -63,6 +64,7 @@ def main():
     if plain:
         print(f"#[fg={DIM}]   ".join(styled))
         print("   ".join(plain))
+        print(" ".join(rows))  # for the dashboard's Usage view: provider:window:percent:reset-epoch:pace
 
 
 if __name__ == "__main__":

@@ -76,7 +76,10 @@ while [ "$(tmux show -gqv @pitwall_sys_pid)" = $$ ] && [ "$(tmux show -gqv @pitw
   INTERVAL=$(tmux show -gqv @pitwall-system-interval); INTERVAL=${INTERVAL:-5}
   sys='' sys_short=''
   # In this shell, not a $(subshell): the network rate needs the counters of the last sample.
-  [ "$(tmux show -gqv @pitwall-system)" = on ] && sample && sys=$out sys_short=$short
+  [ "$(tmux show -gqv @pitwall-system)" = on ] && sample && sys=$out sys_short=$short &&
+    hist_cpu=$(echo ${hist_cpu:-} ${cpu:-0} | awk '{ for (i = (NF > 24 ? NF - 23 : 1); i <= NF; i++) printf "%s%s", $i, (i < NF ? " " : "") }') &&
+    hist_mem=$(echo ${hist_mem:-} ${mem:-0} | awk '{ for (i = (NF > 24 ? NF - 23 : 1); i <= NF; i++) printf "%s%s", $i, (i < NF ? " " : "") }') &&
+    tmux set -g @pitwall_sys_hist "$hist_cpu;$hist_mem" 2>/dev/null # the Usage view's sparklines
   clock=$(date '+%H:%M %d %b')
   # Setting an option redraws the pane borders, where the bottom rule lives: only when something changed.
   [ "$sys" != "${last_sys:-}" ] || [ "$clock" != "${last_clock:-}" ] && tmux set -g @pitwall_system "$sys" \; set -g @pitwall_system_short "$sys_short" \; set -g @pitwall_clock "$clock" 2>/dev/null

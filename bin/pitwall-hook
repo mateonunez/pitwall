@@ -123,6 +123,9 @@ forget() { rm -f "${XDG_STATE_HOME:-$HOME/.local/state}/pitwall/lanes/$sid" 2>/d
 if [ -n "$fresh" ]; then
   tmux set -p -t "$TMUX_PANE" @pitwall_session "$sid" ';' set -p -t "$TMUX_PANE" @pitwall_transcript "$(json transcript_path)" >/dev/null 2>&1
   record
+  # a new session in a workspace saved as a recipe: the recipe follows it
+  [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/pitwall/up/$sname.toml" ] &&
+    tmux run-shell -b "'$(cd "$(dirname "$0")" && pwd)/pitwall' _autosave '$sname'" >/dev/null 2>&1
 fi
 case $event in
   Stop) record ;; # once per turn: keeps the window and pane position current
@@ -159,7 +162,9 @@ set -- set -p -t "$TMUX_PANE" @pitwall_state "$state" ';' \
   set -p -t "$TMUX_PANE" @pitwall_since "$now" ';' \
   set -p -t "$TMUX_PANE" @pitwall_harness "$harness" ';' \
   set -p -t "$TMUX_PANE" @pitwall_name "$(d=${CWD:-$PWD}; printf '%s' "${d##*/}")" ';' \
-  set -pu -t "$TMUX_PANE" @pitwall_urgent
+  set -pu -t "$TMUX_PANE" @pitwall_urgent ';' \
+  set -pu -t "$TMUX_PANE" @pitwall_question ';' \
+  set -pu -t "$TMUX_PANE" @pitwall_choices
 for c in $(tmux list-clients -F '#{client_name}' 2>/dev/null); do
   set -- "$@" ';' refresh-client -S -t "$c"
   # A toast only for clients that are not already looking at the lane.
@@ -169,6 +174,13 @@ for c in $(tmux list-clients -F '#{client_name}' 2>/dev/null); do
 done
 tmux "$@" >/dev/null 2>&1
 
+# Today's ledger, one line per state change (time, pane, session, lane, state): where the day went, for
+# `pitwall stats --today` and the dashboard's Usage view. A new day's file prunes the ones older than two weeks.
+ledger=${XDG_STATE_HOME:-$HOME/.local/state}/pitwall/ledger
+day=$ledger/$(date +%F)
+[ -f "$day" ] || { mkdir -p "$ledger" 2>/dev/null; find "$ledger" -type f -mtime +14 -delete 2>/dev/null; }
+printf '%s\t%s\t%s\t%s\t%s\n' "$now" "$TMUX_PANE" "${sid:--}" "$name" "$state" >>"$day" 2>/dev/null
+
 bin=$(cd "$(dirname "$0")" && pwd)
 # OpenTimeline, when connected: a lane entering or leaving asking, done or gone becomes a signal, sent in the background.
 if [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/pitwall/opentimeline" ]; then
@@ -176,6 +188,8 @@ if [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/pitwall/opentimeline" ]; then
 fi
 # The spinner animates only while something works; the ticker exits on its own afterwards.
 [ "$state" = working ] && tmux run-shell -b "'$bin/pitwall-tick'" >/dev/null 2>&1
+# A lane that starts asking: its question read off the screen once it is drawn, and a toast that says it.
+[ "$state" = asking ] && tmux run-shell -b "sleep 0.6; '$bin/pitwall' _question '$TMUX_PANE' '$now'" >/dev/null 2>&1
 # A lane that starts asking gets one check, ten minutes on (no polling): still asking since then means urgent.
 [ "$state" = asking ] && [ "${urgent_after:-0}" -gt 0 ] &&
   tmux run-shell -b "sleep $urgent_after; '$bin/pitwall' _escalate '$TMUX_PANE' '$now'" >/dev/null 2>&1
