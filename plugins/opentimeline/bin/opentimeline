@@ -1,0 +1,573 @@
+#!/usr/bin/env python3
+"""opentimeline: the OpenTimeline plugin for pitwall.
+
+  opentimeline hook lane.state <pane> <old> <new>   a lane entering or leaving asking, done or gone becomes a signal
+  opentimeline hook lane.urgent <pane> <minutes>    a lane still asking after a while is sent as urgent
+  opentimeline view                                 the dashboard view: stories, or what to do while it cannot show them
+  opentimeline act <action> <row> [answer]          what a view action that needs the plugin does
+  opentimeline cmd …                                `pitwall ot …`: connect, status, flush, disconnect, bell
+
+A lane state change is reported as a `lane.state` signal, only when a lane enters or leaves `asking`, `done` or `gone`. `asking` needs the
+responsible person's attention; any later state is sent with attention `none`, which closes the Needs you condition.
+Signals carry the state, the agent and its metrics, never prompts, task titles or transcripts.
+
+Configured by `pitwall ot connect` in ~/.config/pitwall/opentimeline (two lines: API URL, token file). The token is a
+system seat's credential (read and signal only); it is renewed in place when the server opens its renewal window.
+A signal that cannot be delivered waits in ~/.local/state/pitwall/signals.jsonl and goes out with the next one.
+"""
+import base64
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from urllib.parse import urlencode
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "lib"))
+from pitwall_panel import Snapshot, preview
+
+CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "pitwall", "opentimeline")
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "pitwall")
+PENDING = os.path.join(STATE, "signals.jsonl")
+BELL = CONFIG + "-bell"  # the file naming a person's token: Needs you belongs to a person, not to the seat
+# shortcut: lane metrics come from core's pitwall-stats next to $PITWALL; an official plugin may lean on it, others use `pitwall ls --json`
+PITWALL = os.environ.get("PITWALL") or "pitwall"
+STATS = os.path.join(os.path.dirname(os.path.realpath(PITWALL)), "pitwall-stats") if os.sep in PITWALL else "pitwall-stats"
+
+
+def config():
+    with open(CONFIG) as f:
+        url, token_file = [line.strip() for line in f.read().splitlines()[:2]]
+    return url.rstrip("/"), os.path.realpath(os.path.expanduser(token_file))
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def call(url, path, token, method="GET", body=None):
+    data = json.dumps(body).encode() if body is not None else None
+    request = urllib.request.Request(f"{url}{path}", data=data, method=method, headers={
+        "authorization": f"Bearer {token}", "content-type": "application/json"})
+    expected_origin = os.environ.get("PITWALL_OT_EXPECTED_ORIGIN")
+    if expected_origin and url != expected_origin:
+        raise ValueError("unexpected OpenTimeline origin")
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect()).open if expected_origin else urllib.request.urlopen
+    with opener(request, timeout=10) as response:
+        return response.status, json.loads(response.read() or b"null")
+
+
+def token_for(url, token_file):
+    """The current token, renewed first when the server says the renewal window is open. Failures keep it."""
+    with open(token_file) as f:
+        token = f.read().strip()
+    try:
+        _, me = call(url, "/v1/me", token)
+        opens = ((me or {}).get("credential") or {}).get("renewAfter")
+        if opens and datetime.now(timezone.utc) >= datetime.fromisoformat(opens.replace("Z", "+00:00")):
+            _, renewed = call(url, "/v1/me/credential", token, method="POST")
+            if renewed and renewed.get("token"):
+                tmp = f"{token_file}.{os.getpid()}.renewing"
+                with open(tmp, "w") as f:
+                    f.write(renewed["token"] + "\n")
+                os.chmod(tmp, 0o600)
+                os.replace(tmp, token_file)
+                token = renewed["token"]
+    except (OSError, ValueError, urllib.error.URLError):
+        pass
+    return token
+
+
+def tmux(fmt, pane):
+    return subprocess.run(["tmux", "display", "-p", "-t", pane, fmt], capture_output=True, text=True).stdout.rstrip("\n")
+
+
+def signal(pane, old, new, attention=None):
+    fields = tmux("#{session_name}\t#{window_name}#{?#{>:#{window_panes},1},.#{pane_index},}\t#{@pitwall_harness}\t"
+                  "#{@pitwall_transcript}\t#{@pitwall_session}", pane).split("\t")
+    session, window, harness, transcript, sid = (fields + [""] * 5)[:5]
+    lane = f"{session}/{window}"
+    subject = "lane:" + "".join(c if c.isalnum() or c in "._/-" else "-" for c in lane)
+    attributes = {"harness": harness or "unknown"}
+    stats = subprocess.run([STATS, harness, transcript, sid], capture_output=True, text=True)
+    model, pct, ctx, total = (stats.stdout.rstrip("\n").split("\t") + [""] * 4)[:4]
+    if model:
+        attributes["model"] = model
+    if pct:
+        attributes["context_percent"] = int(pct)
+    if total:
+        attributes["tokens"] = int(total)
+    now = datetime.now(timezone.utc)
+    return {
+        "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"pitwall:{subject}:{new}:{now.timestamp():.3f}")),
+        "kind": "lane.state",
+        "subject": subject,
+        "state": new,
+        "attention": attention or ("attention" if new == "asking" else "none"),
+        "summary": (f"{lane}: still {new} after {old}" if attention == "urgent" else f"{lane}: {old or 'new'} → {new}")[:280],
+        "occurredAt": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "attributes": attributes,
+    }
+
+
+def status():
+    try:
+        url, token_file = config()
+    except (OSError, ValueError):
+        print("opentimeline: not connected (pitwall ot connect <token-file> [--url URL])")
+        return 1
+    pending = sum(1 for _ in open(PENDING)) if os.path.exists(PENDING) else 0
+    try:
+        _, me = call(url, "/v1/me", token_for(url, token_file))
+        actor, credential = (me or {}).get("actor") or {}, (me or {}).get("credential") or {}
+        print(f"opentimeline: {url} as {actor.get('name', '?')} ({actor.get('kind', '?')}), "
+              f"credential until {credential.get('expiresAt', '?')}, {pending} pending")
+        return 0
+    except (OSError, ValueError, urllib.error.URLError) as error:
+        print(f"opentimeline: {url} unreachable or refused ({error}), {pending} pending")
+        return 1
+
+
+def connection():
+    url, path = config()
+    return url, path, os.stat(CONFIG).st_mtime_ns, Path(path).read_text().strip()
+
+
+def options():
+    names = ["@pitwall-ot-repo", "@pitwall-ot-dir", "@pitwall-ot-start", "@pitwall-ot-web", "@pitwall-agent"]
+    out = subprocess.run(["tmux", "display", "-p", "\t".join("#{%s}" % n for n in names)], capture_output=True, text=True).stdout
+    repo, folder, start, web, agent = (out.rstrip("\n").split("\t") + [""] * 5)[:5]
+    return {"repo": repo or "https://github.com/mateonunez/opentimeline",
+            "dir": os.path.expanduser(folder or "~/opentimeline"), "start": start or "pnpm dev", "web": web, "agent": agent or "claude"}
+
+
+def view():
+    """The dashboard view, in pitwall's view records (tab-separated, one per line)."""
+    o = options()
+    slot = "opentimeline:" + CONFIG
+    try:
+        url, path, generation, token = connection()
+    except (OSError, ValueError):
+        print(records("noconf", "", None, o))
+        return 0
+
+    def identity(credential):
+        return [url, path, generation, credential, o["web"], os.stat(__file__).st_mtime_ns]
+
+    snapshot = Snapshot(slot, identity(token))
+    cached = snapshot.read()
+    if cached is not None:
+        preview(os.environ.get("PITWALL_VIEW_PREVIEW"), cached + "\nhint\tLast seen · refreshing…\n")
+    try:
+        live_token = token_for(url, path)
+        if live_token != token:
+            token, cached = live_token, None
+            snapshot.bind(identity(token))
+        _, data = call(url, "/v1/today", token)
+        if not isinstance(data, dict):
+            raise ValueError("Invalid Today response")
+        state = "ok"
+    except urllib.error.HTTPError as exc:
+        state = "refused" if exc.code in (401, 403) else "off"
+        if 400 <= exc.code < 500 and exc.code not in (408, 429, 401, 403):
+            cached = None
+            snapshot.save(None)
+        data = None
+    except (OSError, ValueError):
+        state, data = "off", None
+    try:
+        current = connection()
+    except (OSError, ValueError):
+        current = None
+    if current != (url, path, generation, token):
+        print(records("refused" if current else "noconf", url, None, o))
+        return 0
+    result = records(state, url, data or {}, o)
+    if state == "ok":
+        snapshot.save(result)
+    elif state == "refused":
+        snapshot.save(None)
+    elif cached is not None:
+        result = cached + "\n" + result + "\nhint\tLast seen · refresh failed"
+    print(result)
+    return 0
+
+
+def records(state, url, d, o):
+    clean = lambda v: " ".join(str(v if v is not None else "").split())  # a record is one line, fields have no tabs
+    out = []
+    rec = lambda *f: out.append("\t".join(clean(v) for v in f))
+    if state != "ok":
+        tilde = o["dir"].replace(os.path.expanduser("~"), "~", 1)
+        reads = f" pitwall reads the stories from {url or 'the URL in ~/.config/pitwall/opentimeline'}."
+        rec("every", 10 if state == "off" else 60)
+        if state in ("off", "refused"):
+            rec("badge", "{red}✗")
+        if state == "noconf":
+            rec("head", "OPENTIMELINE IS NOT CONNECTED")
+            rec("act", "-", "connect", "c", "Connect: the file with a seat token…", "pitwall ot connect with a seat token file (read and signal only)." + reads, "prompt", "seat token file")
+        elif state == "refused":
+            rec("head", "OPENTIMELINE REFUSED THE TOKEN")
+            rec("act", "-", "connect", "c", "Connect again: the file with a new seat token…", "pitwall ot connect with a seat token file (read and signal only)." + reads, "prompt", "seat token file")
+        else:
+            rec("head", "OPENTIMELINE IS NOT ANSWERING")
+            if os.path.isdir(o["dir"]):
+                rec("act", "-", "start", "s", f"Start it: {o['start']} in {tilde}", "A tab named opentimeline in this workspace runs it; this view comes alive once it answers." + reads, "tab", "opentimeline", o["dir"], o["start"])
+                rec("act", "-", "agent", "a", f"Ask {o['agent']} to bring it up", f"A new lane in {tilde}: {o['agent']} is asked to start it and fix what stops it." + reads, "lane", "opentimeline", o["dir"],
+                    f"{o['agent']} 'OpenTimeline does not answer at {url or 'its API URL'}. Start it from this checkout ({o['start']}) and fix whatever stops it.'")
+            else:
+                rec("act", "-", "clone", "d", f"Download it into {tilde}", f"git clone {o['repo']}, then pnpm install, in a tab of its own. @pitwall-ot-dir picks another folder." + reads, "tab", "opentimeline", os.path.expanduser("~"), f"git clone '{o['repo']}' '{o['dir']}' && cd '{o['dir']}' && pnpm install")
+        if state != "noconf":
+            rec("act", "-", "retry", "r", "Try again", f"Asks {url or 'OpenTimeline'} again. It also retries on its own every 10 s." + reads, "refresh")
+        rec("act", "-", "repo", "o", "Open the OpenTimeline repo", o["repo"], "open", o["repo"])
+        return "\n".join(out)
+    # fractions dropped: before Python 3.11 fromisoformat takes only 3 or 6 digits
+    epoch = lambda t: int(datetime.fromisoformat(re.sub(r"\.\d+", "", t).replace("Z", "+00:00")).timestamp()) if t else 0
+    web = (o["web"] or re.sub(r":4431$", ":4430", url)).rstrip("/")  # the web app sits next to the API locally
+    day = time.strftime("%Y%j")
+    when = lambda e: (time.strftime("%H:%M", time.localtime(e)) if time.strftime("%Y%j", time.localtime(e)) == day
+                      else time.strftime("%a %H:%M", time.localtime(e)).lower()) if e else ""
+    colour = {"blocker": "{bold}{red}", "decision": "{amber}", "handoff": "{amber}", "finding": "{blue}", "resolution": "{green}"}
+    stories, blockers = [], 0
+    for g in d.get("groups") or []:
+        for s in g.get("stories") or []:
+            changes = s.get("changes") or []
+            last = changes[0] if changes else {}
+            stories.append((clean(g.get("name") or g.get("key")), s, changes, last.get("milestone") or ""))
+            blockers += last.get("milestone") == "blocker"
+    rec("every", 60)
+    rec("unit", "story", "stories")
+    rec("hint", "stories · projects · spaces")
+    rec("right", f"{d.get('days')} days · {d.get('stories')} stories · {d.get('updates')} updates · {(d.get('minutes') or 0) // 60}h of reading")
+    if blockers:
+        rec("badge", f"{{amber}}◆{blockers}")
+
+    def row(group, s, ms):
+        at, title, space = epoch(s.get("latestAt")), clean(s.get("title")), clean((s.get("space") or {}).get("name"))
+        glyph = "{bold}{red}◆" if ms == "blocker" else "{amber}●" if ms == "decision" else "{muted}●"
+        meta = (f"{{bold}}{{red}}blocker{{/}} {{dim}}{when(at)}" if ms == "blocker" else f"{{dim}}{when(at)}")
+        rec("row", s.get("conversationId"), glyph, title, meta, f"{title} {group} {space}", f"{group} {title}", at)
+
+    if blockers:
+        rec("head", "NEEDS YOU")
+        for group, s, _, ms in stories:
+            if ms == "blocker":
+                row(group, s, ms)
+    seen = []
+    for group, *_ in stories:
+        if group not in seen:
+            seen.append(group)
+    for name in seen:
+        rec("head", name or "elsewhere", "count timeline")
+        for group, s, _, ms in stories:
+            if group == name:
+                row(group, s, ms)
+    for group, s, changes, _ in stories:
+        sid, last = s.get("conversationId"), (changes[0] if changes else {})
+        link = f"{web}/events/{last.get('eventId') or ''}"
+        rec("act", sid, "open", "⏎", "Open in the browser", "The story's latest update in OpenTimeline.", "open", link)
+        rec("act", sid, "copy", "y", "Copy the link", "The link to the story's latest update.", "copy", link)
+        if last.get("eventId"):
+            rec("act", sid, "handoff", "h", "Hand off this story…", "Save a local copy of its context and choose an agent.", "run", "ctrl-q")
+        space = clean((s.get("space") or {}).get("name"))
+        rec("side", sid, "{dim}", f"{group}{' · ' + space if space else ''} · {s.get('updates')} updates · {s.get('minutes')} min".upper())
+        rec("side", sid, "{bold}{text}", clean(s.get("title")))
+        rec("side", sid, "", "")
+        for c in changes:
+            ms = c.get("milestone") or ""
+            rec("side", sid, "", f"{{dim}}{when(epoch(c.get('at')))}  {clean((c.get('author') or {}).get('name'))}{{/}}" + (f" {{dim}}·{{/}} {colour.get(ms, '{muted}')}{ms}" if ms else ""))
+            rec("side", sid, "  {muted}", clean(c.get("summary")))
+            rec("side", sid, "", "")
+    return "\n".join(out)
+
+
+def send(signals):
+    """Delivers the signals with the ones still waiting; what cannot go out yet waits for the next one."""
+    try:
+        url, token_file = config()
+    except (OSError, ValueError):
+        return  # not connected: nothing to do
+    batch = []
+    if os.path.exists(PENDING):
+        with open(PENDING) as f:
+            batch = [json.loads(line) for line in f if line.strip()][-49:]
+    batch += signals
+    if not batch:
+        return
+    try:
+        code, _ = call(url, "/v1/signals", token_for(url, token_file), method="POST", body={"signals": batch})
+        delivered = code == 201
+    except urllib.error.HTTPError as error:
+        delivered = 400 <= error.code < 500 and error.code != 429  # refused for good: do not keep retrying it
+    except (OSError, ValueError, urllib.error.URLError):
+        delivered = False
+    os.makedirs(STATE, exist_ok=True)
+    if delivered:
+        if os.path.exists(PENDING):
+            os.remove(PENDING)
+    else:
+        with open(PENDING, "w") as f:
+            f.writelines(json.dumps(s) + "\n" for s in batch)
+
+
+def tmux_set(*args):
+    subprocess.run(["tmux", *args], capture_output=True)
+
+
+def bell(arg):
+    """Needs you's count in the status line, read with a person's token (the seat cannot read it)."""
+    if arg == "--refresh":
+        if not os.path.exists(BELL):
+            return 0
+        tmux_set("set", "-g", "@pitwall_ot_bell_at", str(int(time.time())))
+        try:
+            url = config()[0]
+        except (OSError, ValueError):
+            url = "http://127.0.0.1:4431"
+        try:
+            with open(BELL) as f, open(f.read().strip()) as t:
+                _, d = call(url, "/v1/attention", t.read().strip())
+            n = len(d.get("items", d) if isinstance(d, dict) else d)
+        except (OSError, ValueError, TypeError, urllib.error.URLError):
+            return 0
+        tmux_set("set", "-g", "@pitwall_seg_opentimeline", str(n))
+        return 0
+    if arg == "off":
+        if os.path.exists(BELL):
+            os.remove(BELL)
+        tmux_set("set", "-gu", "@pitwall_seg_opentimeline")
+        print("opentimeline: bell off")
+        return 0
+    if not arg:
+        print("usage: pitwall ot bell <person-token-file> | --refresh | off", file=sys.stderr)
+        return 1
+    if not os.path.isfile(arg):
+        print(f"pitwall: no token file at {arg}", file=sys.stderr)
+        return 1
+    os.makedirs(os.path.dirname(BELL), exist_ok=True)
+    with open(BELL, "w") as f:
+        f.write(os.path.abspath(arg) + "\n")
+    bell("--refresh")
+    n = subprocess.run(["tmux", "show", "-gqv", "@pitwall_seg_opentimeline"], capture_output=True, text=True).stdout.strip()
+    print(f"opentimeline: bell on, Needs you has {n or '?'} item(s)")
+    return 0
+
+
+def connect(args):
+    if not args:
+        print("usage: pitwall ot connect <token-file> [--url URL]", file=sys.stderr)
+        return 1
+    if not os.path.isfile(args[0]):
+        print(f"pitwall: no token file at {args[0]}", file=sys.stderr)
+        return 1
+    url = "http://127.0.0.1:4431"
+    if args[1:2] == ["--url"]:
+        if len(args) < 3:
+            print("usage: pitwall ot connect <token-file> --url URL", file=sys.stderr)
+            return 1
+        url = args[2]
+    os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
+    with open(CONFIG, "w") as f:
+        f.write(f"{url}\n{os.path.abspath(args[0])}\n")
+    return status()
+
+
+def cmd(args):
+    verb, rest = (args[0] if args else "status"), args[1:]
+    if verb in ("stories", "context"):
+        if rest[:1] != ["--space"] or not 2 <= len(rest) <= 3 or (verb == "context" and len(rest) != 3):
+            print("usage: pitwall ot stories --space SLUG [query] | context --space SLUG EVENT_ID", file=sys.stderr)
+            return 1
+        try:
+            return read_space(verb, rest[1], rest[2] if len(rest) == 3 else "")
+        except (OSError, ValueError, TypeError, AttributeError, KeyError):
+            print("opentimeline: space or story unavailable to the connected seat", file=sys.stderr)
+            return 1
+    if verb == "bell":
+        return bell(rest[0] if rest else "")
+    if verb == "connect":
+        return connect(rest)
+    if verb == "status":
+        return status()
+    if verb == "flush":
+        send([])
+        return 0
+    if verb == "disconnect":
+        if os.path.exists(CONFIG):
+            os.remove(CONFIG)
+        Snapshot("opentimeline:" + CONFIG, None).save(None)
+        print("opentimeline: disconnected")
+        return 0
+    print("usage: pitwall ot stories --space SLUG [query] | context --space SLUG EVENT_ID | connect <token-file> [--url URL] | status | flush | disconnect | bell <person-token-file> | off", file=sys.stderr)
+    return 1
+
+
+def hook(event, args):
+    connected = os.path.exists(CONFIG)
+    if event == "lane.state" and len(args) >= 3:
+        pane, old, new = args[:3]
+        old = "" if old == "-" else old  # a lane pitwall had no state for yet
+        if connected and {old, new} & {"asking", "done", "gone"}:
+            send([signal(pane, old, new)])
+        if new in ("done", "idle") and os.path.exists(BELL):  # when a turn ends, a count older than two minutes refreshes
+            at = subprocess.run(["tmux", "show", "-gqv", "@pitwall_ot_bell_at"], capture_output=True, text=True).stdout.strip()
+            if time.time() - int(at or 0) > 120:
+                bell("--refresh")
+    elif event == "lane.urgent" and len(args) >= 2 and connected:
+        send([signal(args[0], f"{args[1]}m", "asking", "urgent")])
+    return 0
+
+
+def web_origin(url):
+    return (options()["web"] or re.sub(r":4431$", ":4430", url)).rstrip("/")
+
+
+def read_space(verb, slug, value):
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug):
+        raise ValueError("invalid space slug")
+    active = connection()
+    url, _, _, token = active
+    _, space = call(url, f"/v1/spaces/{slug}", token)
+    space_id = space.get("id")
+    if not space_id or space.get("slug") != slug:
+        raise ValueError("space unavailable")
+    web = web_origin(url)
+    if verb == "context":
+        event = str(uuid.UUID(value))
+        _, item = call(url, f"/v1/events/{event}", token)
+        if (item.get("space") or {}).get("id") != space_id or item.get("id") != event or item.get("deleted"):
+            raise ValueError("story unavailable in this space")
+        header = f"# OpenTimeline · {slug}\n\nSource: {web}/events/{event}\n"
+        print(conversation_context(active, event, header).decode("utf-8"), end="")
+        return 0
+    query = {"space": slug, "limit": 30}
+    if value:
+        query["q"] = value
+    _, feed = call(url, "/v1/events?" + urlencode(query), token)
+    stories = []
+    seen = set()
+    for item in feed["items"]:
+        if (item.get("space") or {}).get("id") != space_id or item.get("deleted"):
+            continue
+        event = str(uuid.UUID(item["id"]))
+        conversation = item.get("conversationId") or event
+        if conversation in seen:
+            continue
+        seen.add(conversation)
+        presentation, activity = item.get("presentation") or {}, item.get("activity") or {}
+        stories.append({
+            "eventId": event,
+            "title": presentation.get("title"),
+            "summary": activity.get("summary") or presentation.get("summary"),
+            "updatedAt": item.get("time"),
+            "url": f"{web}/events/{event}",
+        })
+    if connection() != active:
+        raise ValueError("connection changed")
+    print(json.dumps(stories, ensure_ascii=False, indent=2))
+    return 0
+
+
+def conversation_context(active, event, header, allow_summary=False):
+    url, _, _, token = active
+    path = f"/v1/events/{event}/export"
+    budget = 60 * 1024
+    text = header.encode("utf-8")
+    cursor, snapshot = "", ""
+    while True:
+        query = "?" + urlencode({"snapshot": snapshot, "cursor": cursor}) if cursor else ""
+        try:
+            _, page = call(url, path + query, token)
+        except urllib.error.HTTPError as error:
+            # Older servers can still provide the freshly authorized Today summaries.
+            if not allow_summary or error.code != 404 or cursor:
+                raise
+            reply = json.loads(error.read(4096))
+            if not str(reply.get("message", "")).startswith("Route GET:"):
+                raise
+            text += b"\nFull conversation export is unavailable on this server.\n"
+            break
+        if not isinstance(page.get("markdown"), str):
+            raise ValueError("invalid conversation export")
+        if cursor and page.get("snapshot") != snapshot:
+            raise ValueError("conversation export changed")
+        chunk = b"\n" + page["markdown"].encode("utf-8")
+        if len(text) + len(chunk) > budget:
+            text += chunk[:max(0, budget - len(text))]
+            text = text.decode("utf-8", errors="ignore").encode("utf-8")
+            text += b"\n\n[Export shortened. Continue in the source story.]\n"
+            break
+        text += chunk
+        next_cursor = page.get("nextCursor")
+        if next_cursor is None:
+            break
+        snapshot = page["snapshot"]
+        if not isinstance(next_cursor, str) or not next_cursor.isdecimal() or int(next_cursor) <= int(cursor or 0):
+            raise ValueError("invalid conversation cursor")
+        cursor = next_cursor
+    if connection() != active:
+        raise ValueError("connection changed")
+    return text
+
+
+def handoff(row):
+    active = connection()
+    url, _, _, token = active
+    _, today = call(url, "/v1/today", token)
+    story = next((s for g in today.get("groups", []) for s in g.get("stories", [])
+                  if s.get("conversationId") == row), None)
+    if not story or not story.get("changes"):
+        raise ValueError("story is unavailable")
+    changes = story["changes"]
+    event = str(uuid.UUID(changes[0]["eventId"]))
+    title = " ".join((story.get("title") or "Story").split())[:250]
+    recent = "\n".join(f"- {c.get('at', '')} · {(c.get('author') or {}).get('name', '')}: {c.get('summary', '')}"
+                       for c in changes[:2])
+    header = (f"# OpenTimeline · {title}\n\nSource: {web_origin(url)}/events/{event}\n\n"
+              f"## Recent updates\n{recent}\n")
+    text = conversation_context(active, event, header, allow_summary=True)
+    print("handoff\t" + base64.b64encode(text).decode("ascii"))
+
+
+def act(action, row, answer=""):
+    if action == "connect":  # the prompt's answer: a seat token file
+        path = os.path.expanduser(answer)
+        if answer:
+            import io, contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                connect([path])
+            print("notice\t" + (buf.getvalue().strip().splitlines() or [""])[0])
+        print("refresh")
+    elif action == "handoff":
+        try:
+            handoff(row)
+        except (OSError, ValueError, TypeError, AttributeError, KeyError):
+            print("notice\tOpenTimeline could not read this story")
+    return 0
+
+
+def main():
+    a = sys.argv[1:]
+    verb = a[0] if a else ""
+    if verb == "hook" and len(a) >= 2:
+        return hook(a[1], a[2:])
+    if verb == "view":
+        return view()
+    if verb == "act" and len(a) >= 3:
+        return act(a[1], a[2], a[3] if len(a) > 3 else "")
+    if verb == "cmd":
+        return cmd(a[1:])
+    print(__doc__.strip(), file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

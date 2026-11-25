@@ -54,7 +54,7 @@ def main():
                 tint = AMBER  # on course to run out before the reset
             left = until(w.get("resetsAt"), now)
             rows.append(f"{name}:{unit}:{pct}:{int(now + left) if left is not None else 0}:{'short' if unit == 'wk' and short else 'ok'}")
-            reset = f" ↻{span(left)}" if left is not None else ""
+            reset = "" if left is None else f" ↻{span(left)}" if left > 0 else " ↻due"
             s_parts.append(f"#[fg={DIM}]{unit} #[fg={tint}]{pct}%#[fg={DIM}]{reset}")
             p_parts.append(f"{unit} {pct}%{reset}")
         s_text = f"#[fg={DIM}]{name} " + f"#[fg={DIM}] · ".join(s_parts)
