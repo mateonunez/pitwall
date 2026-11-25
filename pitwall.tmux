@@ -36,9 +36,9 @@ ASKING='#{?#{m:*1*,#{P:#{@pitwall_urgent} }},#[fg='"$GONE"' bold],#[fg='"$ASK"' 
 tmux set -g @pitwall-glyph "$(glyph "$ASKING" "#[fg=$DONE bold]" "#[fg=$GONE]")"
 tmux set -g @pitwall-glyph-plain "$(glyph '' '' '')"
 # Right side: other workspaces with a lane that needs you, this workspace's lanes that do, lanes waiting to be
-# restored after a crash, Needs you's count, then the usage limits.
+# restored after a crash, the plugins' pieces (OpenTimeline's Needs you), then the usage limits.
 OTHERS="#{S:#{?#{!=:#{session_name},#{client_session}},#{?#{m:*asking*,#{W:#{P:$S }}},#[fg=$ASK bold]◆ #{session_name}#[nobold]  ,#{?#{m:*done*,#{W:#{P:$S }}},#[fg=$DONE]✓ #{session_name}  ,}},}}"
-tmux set -g @pitwall-summary "$OTHERS#{W:#{P:#{?#{==:$S,asking},#[fg=$ASK bold]◆ ,}#{?#{==:$S,done},#[fg=$DONE bold]✓ ,}}}#[nobold]#{?#{&&:#{@pitwall_restorable},#{!=:#{@pitwall_restorable},0}},#[fg=$ASK]↺ #{@pitwall_restorable}  ,}#{?#{&&:#{@pitwall_bell},#{!=:#{@pitwall_bell},0}},#[fg=$ASK bold]⚑ #{@pitwall_bell}#[nobold]  ,}#{?#{@pitwall_quota},#{@pitwall_quota}  ,}"
+tmux set -g @pitwall-summary "$OTHERS#{W:#{P:#{?#{==:$S,asking},#[fg=$ASK bold]◆ ,}#{?#{==:$S,done},#[fg=$DONE bold]✓ ,}}}#[nobold]#{?#{&&:#{@pitwall_restorable},#{!=:#{@pitwall_restorable},0}},#[fg=$ASK]↺ #{@pitwall_restorable}  ,}#{E:@pitwall-segments}#{?#{@pitwall_quota},#{@pitwall_quota}  ,}"
 
 # Put the glyph before the window name in whatever format the theme already has.
 inject() { # $1 option, $2 glyph option
@@ -78,11 +78,11 @@ if [ "$(opt @pitwall-layout inline)" = tabs ]; then
   TAB_ON="#[range=window|#{window_index}]#[fg=$TABBG bg=$STRIP nounderscore]$L#[fg=$ASK bg=$TABBG bold underscore us=$ASK]#{window_index} #[fg=$DIM nobold]#{E:@pitwall-glyph}#[fg=$TEXT bold]$NAME#[fg=$TABBG bg=$STRIP nobold nounderscore]$R#[norange]"
   HERE="#[range=session|#{session_id}]#[fg=$ASK bg=$STRIP]$L#[fg=$DARK bg=$ASK bold]#{session_name}#[fg=$ASK bg=$STRIP nobold]$R#[norange]#{W:$TAB_OFF,$TAB_ON}#[nounderscore bg=$STRIP]   "
   AWAY="#[range=session|#{session_id}]#[fg=$PILL bg=$STRIP]$L#[fg=$DIM bg=$PILL]#{session_name}#{?$A, #[fg=$ASK bold]◆$A#[nobold],}#{?$D, #[fg=$DONE bold]✓$D#[nobold],}#{?$K, #[fg=$MUTED]#{?#{@pitwall_spin},#{@pitwall_spin},⠙}$K,}#[fg=$PILL bg=$STRIP]$R#[norange]  "
-  RIGHT="#{?client_prefix,#[fg=$ASK bold]prefix#[nobold]  ,}#{?#{&&:#{@pitwall_restorable},#{!=:#{@pitwall_restorable},0}},#[fg=$ASK]↺ #{@pitwall_restorable}  ,}#{?#{&&:#{@pitwall_bell},#{!=:#{@pitwall_bell},0}},#[fg=$ASK bold]⚑ #{@pitwall_bell}#[nobold]  ,}"
+  RIGHT="#{?client_prefix,#[fg=$ASK bold]prefix#[nobold]  ,}#{?#{&&:#{@pitwall_restorable},#{!=:#{@pitwall_restorable},0}},#[fg=$ASK]↺ #{@pitwall_restorable}  ,}#{E:@pitwall-segments}"
   tmux set -g @pitwall-tabs-fmt "#[fill=$STRIP bg=$STRIP]#[align=left] #{S:#{?#{==:#{session_name},#{client_session}},$HERE,$AWAY}}#[align=right bg=$STRIP]$RIGHT"
   # The right side gives way as the pane narrows: everything, then cpu, memory and disk, then the clock alone.
   ROOM='#{e|-:#{pane_width},#{?pane_at_left,60,0}}'
-  FULL="#{?#{@pitwall_system},#{@pitwall_system}#[fg=$SEP] · ,}#[fg=$TEXT]#{@pitwall_clock} #[default]"
+  FULL="#{E:@pitwall-rule-segments}#{?#{@pitwall_system},#{@pitwall_system}#[fg=$SEP] · ,}#[fg=$TEXT]#{@pitwall_clock} #[default]" # plugins' rule pieces first
   SHORT="#{?#{@pitwall_system_short},#{@pitwall_system_short}#[fg=$SEP] · ,}#[fg=$TEXT]#{=5:@pitwall_clock} #[default]"
   CLOCK="#[fg=$TEXT]#{=5:@pitwall_clock} #[default]"
   tmux set -g @pitwall-rule-fmt "#{?pane_at_bottom,#{?pane_at_left,#[fg=$MUTED] #{?#{@pitwall_quota},#{@pitwall_quota} ,}#[default],}#[align=right]#{?pane_at_right, #{?#{e|>=:$ROOM,92},$FULL,#{?#{e|>=:$ROOM,48},$SHORT,$CLOCK}},},}"
@@ -127,9 +127,14 @@ BASH_BIN=bash
 for b in /opt/homebrew/bin/bash /usr/local/bin/bash; do [ -x "$b" ] && BASH_BIN=$b && break; done
 # Every key carries a note (-N), so tmux's own help (prefix ?) lists pitwall's keys too. One key opens the
 # dashboard, where everything else is; the jump and restore keep keys of their own because they are one step.
-tmux bind -N "pitwall: the dashboard (type to find a lane, a workspace or an action; tab for actions)" "$KEY_DASH" display-popup -E -w 84% -h 78% -b rounded -S "fg=#404040" "'$BASH_BIN' '$DIR/bin/pitwall-dash'"
+# tmux 3.7c lets scrolling panes overwrite a centred popup's top edge with status at the top.
+DASH_Y=C
+if [ "$(tmux display -p '#{version}')" = 3.7c ]; then
+  DASH_Y='#{?#{&&:#{!=:#{status},off},#{==:#{status-position},top}},0,#{popup_centre_y}}'
+fi
+tmux bind -N "pitwall: the dashboard (type to find a lane, a workspace or an action; tab for actions)" "$KEY_DASH" display-popup -E -w 84% -h 78% -y "$DASH_Y" -b rounded -S "fg=#404040" "'$BASH_BIN' '$DIR/bin/pitwall-dash'"
 tmux bind -N "pitwall: next lane that needs you (again to cycle)" "$KEY_NEXT" run-shell "'$DIR/bin/pitwall' next"
-tmux bind -N "pitwall: restore the lanes a dead tmux took with it" "$KEY_RESTORE" display-popup -E -w 70% -h 50% -b rounded -S "fg=#404040" "'$DIR/bin/pitwall' _restore-prompt"
+tmux bind -N "pitwall: find a recoverable lane" "$KEY_RESTORE" display-popup -E -w 84% -h 78% -y "$DASH_Y" -b rounded -S "fg=#404040" "'$BASH_BIN' '$DIR/bin/pitwall-dash' --restore"
 # Keys earlier versions bound and the dashboard replaces: unbound only while they still point at pitwall.
 for k in $(tmux list-keys -T prefix 2>/dev/null | awk '/pitwall-board|pitwall-ws/ { for (i = 1; i < NF; i++) if ($i == "prefix") { print $(i + 1); break } }'); do
   tmux unbind "$k"
@@ -142,4 +147,6 @@ tmux run-shell -b "'$DIR/bin/pitwall-tick'"
 # After a crash, say how many lanes can come back (↺ N, prefix R). Refresh the usage limits in the background.
 tmux run-shell -b "tmux set -g @pitwall_restorable \"\$('$DIR/bin/pitwall' restore --count)\""
 [ "$(opt @pitwall-quota on)" = on ] && tmux run-shell -b "'$DIR/bin/pitwall' quota --refresh"
+# The plugins: their index (what listens to lane events, the views, the commands) and their status pieces.
+tmux run-shell -b "'$DIR/bin/pitwall' plugin _load"
 true # the plugin loaded; a switched-off feature above is not a failure

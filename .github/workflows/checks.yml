@@ -19,8 +19,10 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -yq tmux
       - name: Syntax
         run: |
-          sh -n pitwall.tmux bin/pitwall bin/pitwall-hook bin/pitwall-tick bin/pitwall-sys test/run.sh
+          for script in pitwall.tmux bin/pitwall bin/pitwall-hook bin/pitwall-tick bin/pitwall-sys lib/pitwall-features.sh test/run.sh; do
+            sh -n "$script" || exit 1
+          done
           bash -n bin/pitwall-dash
-          python3 -m py_compile bin/pitwall-stats bin/pitwall-quota bin/pitwall-signal
+          python3 -m py_compile bin/pitwall-stats bin/pitwall-quota bin/pitwall-usage bin/pitwall-handoff lib/pitwall_panel.py plugins/opentimeline/bin/opentimeline test/panels.py
       - name: Checks
         run: test/run.sh

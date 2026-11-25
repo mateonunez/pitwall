@@ -1,6 +1,6 @@
 ---
 name: pitwall
-description: Read and steer the coding agents running in tmux lanes through pitwall — which ones wait for the user, what they ask, what they are on — and act on one only after asking. Use when the user asks what their agents are doing, which lanes need them, to answer or nudge a lane, to bring a workspace back, or says "pitwall", "lanes", "fleet", "who is waiting".
+description: Coordinate local tmux lanes with Pitwall when the user asks or the project opts in. Use for triage, handoffs and restore. Ask the user before acting on another lane.
 ---
 
 # pitwall: the fleet of agents in tmux
@@ -9,7 +9,12 @@ pitwall shows each coding agent running in tmux (Claude Code, Codex, Hermes and 
 `asking` (waits for the user), `done` (finished while the user looked elsewhere), `working`, `idle`, `gone`.
 An `asking` lane that has waited past ten minutes is **urgent**.
 
-## Read first, always
+## Scope the read
+
+Follow the project's local coordination instructions first. Use Pitwall proactively only where the project opts in.
+When the owner authorizes one workspace, run
+`pitwall ls --workspace NAME --json`, with `--root DIR` for each approved project root when that workspace is shared.
+This returns pane IDs for inspection. Use the unscoped commands below only when the owner authorizes the whole fleet.
 
 ```sh
 pitwall ls --json      # every lane, the ones that need the user first
@@ -22,7 +27,10 @@ pitwall up --list      # the workspace recipes, and how much of each is up
 `task` (what the agent is on), `since` (epoch of the last state change), `urgent`, `folder`, and for an `asking`
 lane its `question` (`Allow pnpm release --tag v0.2.0?`) and `choices` (`1 Yes · 2 Yes, always · 3 No`).
 
-Refs are valid until the next `ls`: list again before acting.
+Unscoped refs are positions in the current order. Confirm the lane and list again before acting.
+
+For a handoff from your own lane, save a short note with the result, evidence and next step via
+`pitwall handoff save --here < note.md`, or use the project's scoped wrapper. Share the resulting ID with the user.
 
 ## Report like a pit wall
 

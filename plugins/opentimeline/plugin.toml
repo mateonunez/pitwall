@@ -1,0 +1,11 @@
+# The OpenTimeline plugin: lane states as signals, the stories as a dashboard view, Needs you in the status line.
+name = "opentimeline"
+description = "Lane states as OpenTimeline signals, its stories as a dashboard view, Needs you in the status line"
+version = "0.1.0"
+pitwall = ">=0.2.1"
+run = "bin/opentimeline"        # pitwall calls it: hook <event> … · view · act <action> <row> [answer] · cmd …
+events = "lane.state lane.urgent"
+view = "OpenTimeline"
+command = "ot"                  # pitwall ot … runs `bin/opentimeline cmd …`
+segment = "⚑"                   # @pitwall_seg_opentimeline, Needs you's count, in the status line
+segment_color = "asking"

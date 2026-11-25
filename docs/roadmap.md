@@ -12,7 +12,8 @@ Where pitwall goes next, and the rules it keeps on the way.
 
 ## Shipped
 
-- **Restore.** The hook keeps one record per agent session; after tmux dies, `prefix R` or `pitwall restore` rebuilds sessions, windows and panes and resumes each agent.
+- **Restore.** The hook keeps one record per agent session. After tmux dies, `prefix R` opens recoverable lanes in the dashboard and resumes the one you choose. `pitwall restore` brings them all back.
+- **Inbox.** Review questions and unread completions across workspaces, answer questions, and mark individual completions as read from the dashboard.
 - **Lanes as worktrees.** `pitwall new` and `pitwall done`, on [gwm](https://github.com/kbrdn1/gwm) and [lumen](https://github.com/jnsahaj/lumen).
 - **Needs you, beyond the terminal.** `lane.state` signals to [OpenTimeline](https://github.com/mateonunez/opentimeline) through a system seat, with the lane's metrics; the credential renews itself.
 - **The dashboard** (`prefix Space`): one palette for lanes, workspaces, actions and commands, replacing the board, the workspace picker and the menu. Move, move and go, rename tabs and workspaces, select, new lane or gwm worktree, diff in lumen, close.
@@ -30,12 +31,14 @@ Where pitwall goes next, and the rules it keeps on the way.
 - **Signals that reach their lane.** Hooks run outside tmux (Codex's shared daemon, some Claude sessions) find their pane by session, directory or Codex thread name; a lane whose subagents still work in the background stays working.
 - **Context on every lane.** Model, context and tokens from each agent's transcript; [CodexBar](https://github.com/steipete/CodexBar) usage limits in the status line.
 
+- **Plugins.** `pitwall plugin add` takes an official plugin by name, a local folder or any git repo (shown, then installed after a yes). A plugin is one executable and a manifest: lane events, a dashboard view, a `pitwall` command, a piece of the status line ([docs/plugins.md](plugins.md)). OpenTimeline moved out of core to become the first, unchanged for its users.
+
 ## Next
 
 | Step | Ships | Done when |
 | --- | --- | --- |
+| **Spotify, the second plugin** | What plays, from a repo of its own: proves a plugin from outside the tree | `pitwall plugin add mateonunez/pitwall-spotify` and it plays |
 | **Workspaces, fuller** | A working directory and a note per workspace; close from the picker | A workspace is a place, not just a name |
-| **Saved lanes, one by one** | Closed and restorable lanes in their own section; restore or forget one | Coming back after a crash is a list, not a command |
 
 ## Open questions
 

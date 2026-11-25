@@ -7,27 +7,30 @@ DIR=$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)
 HOOK="$DIR/bin/pitwall-hook"
 STATE=${XDG_STATE_HOME:-$HOME/.local/state}/pitwall
 TAB=$(printf '\t')
+. "$DIR/lib/pitwall-features.sh"
 
 usage() {
   cat <<'EOF'
 pitwall: see and steer coding agents from tmux
 
-  pitwall ls [--json]       every lane, the ones that need you first, with a ref (@1, @2…)
+  pitwall ls [--json] [--workspace NAME] [--root DIR ...]  list lanes, optionally within one workspace and directory roots
   pitwall peek @N [lines]   the last lines of a lane
   pitwall go @N             jump to a lane
   pitwall answer @N <1|2|3>  answer a lane that asks (one key, never to a lane that works)
   pitwall send @N <text>    write to a lane's agent and send it
+  pitwall handoff save <@N|--here> < note.md | list | show ID | stage ID @N
   pitwall next              jump to the next lane that is asking or done (cycles)
   pitwall dash              the dashboard (prefix Space opens it in a popup); board is the old name
   pitwall stats [@N]        model, context and tokens per lane, from the agents' transcripts
+  pitwall features         local feature counts for the last 7 and 30 days and all time
   pitwall quota [--refresh] Claude and Codex usage limits, from CodexBar
   pitwall saved             the lanes pitwall can bring back after tmux dies
-  pitwall restore [--dry]   reopen them: the session, window and pane, resuming each agent
+  pitwall restore [--dry | --one <session-id>]  reopen recoverable lanes
   pitwall forget <id>       drop a saved lane (a session id or its first characters)
   pitwall new <name> [--agent claude|codex]   a worktree (gwm), a window there and an agent in it
   pitwall done @N           review the lane's diff (lumen), then remove its worktree if you say so
-  pitwall ot connect <token> [--url URL]      send lane states to OpenTimeline (status, flush, disconnect)
-  pitwall ot bell <person-token>              Needs you's count in the status line (off to stop)
+  pitwall plugin [ls]                         the plugins: views, commands, status pieces, hooks on lane events
+  pitwall plugin add <name|folder|owner/repo> an official plugin (opentimeline), a local folder or a git repo; rm, update
   pitwall ws [new|go|rename|close] …          workspaces (tmux sessions): list them, or manage one
   pitwall up [name] [--dry] · --list · --save [ws]  a workspace from a small file: tabs, agents, servers, nvim
   pitwall move <@N|window> <workspace>        move a lane's window, agents still running, to a workspace
@@ -40,20 +43,34 @@ EOF
 }
 
 # One row per lane (a pane running an agent), tab-separated, ordered by what needs you:
-# rank state session window pane-id since harness title transcript session-id urgent folder question choices. A window with several panes names them window.N.
-lanes() {
+# rank state session window pane-id since harness title transcript session-id urgent folder question choices favorite pending-handoff. A window with several panes names them window.N.
+lanes() (
+  workspace=${1:-} roots=${2:-}
+  if [ -n "$workspace" ]; then set -- -s -t "=$workspace"; else set -- -a; fi
   fmt=$(tmux show -gqv @pitwall-state-fmt)
   [ -n "$fmt" ] || { echo "pitwall: not loaded in this tmux server (run pitwall.tmux)" >&2; exit 1; }
-  tmux list-panes -a -F "#{E:@pitwall-state-fmt}	#{session_name}	#{window_name}#{?#{>:#{window_panes},1},.#{pane_index},}	#{pane_id}	#{@pitwall_since}	#{?#{@pitwall_harness},#{@pitwall_harness},#{?#{==:#{pane_current_command},codex},codex,#{?#{m/r:^(claude|[0-9.]+)$,#{pane_current_command}},claude,}}}	#{pane_title}	#{@pitwall_transcript}	#{@pitwall_session}	#{?#{@pitwall_urgent},urgent,-}	#{pane_current_path}	#{@pitwall_question}	#{@pitwall_choices}" |
-    awk -F '\t' 'BEGIN { OFS = "\t"; split("asking done working idle gone", o, " "); for (i in o) rank[o[i]] = i }
-      $1 != "" {
+  rows=$(tmux list-panes "$@" -F "#{E:@pitwall-state-fmt}	#{session_name}	#{window_name}#{?#{>:#{window_panes},1},.#{pane_index},}	#{pane_id}	#{@pitwall_since}	#{?#{@pitwall_harness},#{@pitwall_harness},#{?#{==:#{pane_current_command},codex},codex,#{?#{m/r:^(claude|[0-9.]+)$,#{pane_current_command}},claude,}}}	#{pane_title}	#{@pitwall_transcript}	#{@pitwall_session}	#{?#{@pitwall_urgent},urgent,-}	#{pane_current_path}	#{@pitwall_question}	#{@pitwall_choices}	#{?#{==:#{@pitwall_favorite},1},1,0}	#{?#{==:#{@pitwall_handoff_recipient},#{pane_pid}:#{@pitwall_session}},#{?#{@pitwall_handoff},#{@pitwall_handoff},-},-}") || exit 1
+  printf '%s\n' "$rows" |
+    PITWALL_LIST_WORKSPACE="$workspace" PITWALL_LIST_ROOTS="$roots" awk -F '\t' '
+      BEGIN { OFS = "\t"; split("asking done working idle gone", o, " "); for (i in o) rank[o[i]] = i
+        workspace = ENVIRON["PITWALL_LIST_WORKSPACE"]
+        n = split(ENVIRON["PITWALL_LIST_ROOTS"], roots, "\n") }
+      function allowed(path, i, root) {
+        if (!n) return 1
+        for (i = 1; i <= n; i++) {
+          root = roots[i]
+          if (root == path || index(path, root == "/" ? "/" : root "/") == 1) return 1
+        }
+        return 0
+      }
+      $1 != "" && (workspace == "" || $2 == workspace) && allowed($11) {
         t = $7; sub(/^\[ [^]]* \] Action Required \| /, "", t)  # Codex waiting for you (it blinks "[ ! ]" / "[ . ]")
         if (t ~ /^[^A-Za-z0-9]+ /) sub(/^[^ ]+ /, "", t)           # spinner or ✳ in front of the task
         sub(/ \| [^|]*$/, "", t); $7 = t                         # Codex appends " | <dir>"
         print rank[$1], $0
       }' |
     sort -t "$(printf '\t')" -k1,1n -k3,3 -k4,4
-}
+)
 
 # shortcut: refs are positions in the current ordering, valid until the lanes move; stable ids come with the TS CLI.
 resolve() {
@@ -63,29 +80,55 @@ resolve() {
 }
 
 cmd_ls() {
+  json='' workspace='' roots=''
+  while [ "$#" -gt 0 ]; do
+    case $1 in
+      --json) json=--json ;;
+      --workspace) shift; workspace=${1:?usage: pitwall ls --workspace NAME} ;;
+      --root)
+        shift
+        case ${1:-} in /*) ;; *) echo 'pitwall: --root requires an absolute directory' >&2; return 1 ;; esac
+        root=$(cd -P -- "$1" && pwd -P) || return 1
+        case $root in *[[:cntrl:]]*) echo 'pitwall: directory contains a control character' >&2; return 1 ;; esac
+        roots=${roots:+$roots"
+"}$root
+        ;;
+      *) echo 'usage: pitwall ls [--json] [--workspace NAME] [--root DIR ...]' >&2; return 1 ;;
+    esac
+    shift
+  done
+  if [ -n "$workspace" ]; then
+    tmux has-session -t "=$workspace" 2>/dev/null || { echo 'pitwall: workspace unavailable' >&2; return 1; }
+  elif [ -n "$roots" ]; then echo 'pitwall: --root requires --workspace' >&2; return 1; fi
+  rows=$(lanes "$workspace" "$roots") || return
   now=$(date +%s)
-  lanes | awk -F '\t' -v now="$now" -v json="${1:-}" '
+  if [ -n "$rows" ]; then printf '%s\n' "$rows"; fi | awk -F '\t' -v now="$now" -v json="$json" -v scoped="${workspace:+1}" '
     function age(s) { if (s == "") return "—"; d = now - s; return d < 60 ? d "s" : d < 3600 ? int(d / 60) "m" : int(d / 3600) "h" }
     function q(s) { gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); return "\"" s "\"" }
     {
       t = $8
+      ref = scoped ? $5 : "@" NR
       if (json == "--json")
-        printf "%s{\"ref\":\"@%d\",\"state\":%s,\"session\":%s,\"window\":%s,\"id\":%s,\"since\":%s,\"harness\":%s,\"task\":%s,\"urgent\":%s,\"folder\":%s,\"question\":%s,\"choices\":%s}", (NR > 1 ? ",\n " : "[\n "), NR, q($2), q($3), q($4), q($5), ($6 == "" ? "null" : $6), q($7), q(t), ($11 == "urgent" ? "true" : "false"), q($12), ($13 == "" ? "null" : q($13)), ($14 == "" ? "null" : q($14))
+        printf "%s{\"ref\":%s,\"state\":%s,\"session\":%s,\"window\":%s,\"id\":%s,\"since\":%s,\"harness\":%s,\"task\":%s,\"urgent\":%s,\"folder\":%s,\"question\":%s,\"choices\":%s}", (NR > 1 ? ",\n " : "[\n "), q(ref), q($2), q($3), q($4), q($5), ($6 == "" ? "null" : $6), q($7), q(t), ($11 == "urgent" ? "true" : "false"), q($12), ($13 == "" ? "null" : q($13)), ($14 == "" ? "null" : q($14))
       else
-        printf "@%-2d %-22s %-8s %4s  %-7s %s\n", NR, $3 "/" $4, $2, age($6), $7, ($2 == "asking" && $13 != "" ? $13 "  " $14 : t)
+        printf "%-3s %-22s %-8s %4s  %-7s %s\n", ref, $3 "/" $4, $2, age($6), $7, ($2 == "asking" && $13 != "" ? $13 "  " $14 : t)
     }
     END { if (json == "--json") print (NR ? "\n]" : "[]") }'
 }
 
 cmd_peek() {
   id=$(resolve "${1:?usage: pitwall peek @N}")
+  feature_use read-output
   tmux capture-pane -p -t "$id" | awk 'NF' | tail -n "${2:-15}"
 }
 
 # Jump to a pane in any session: its session, its window, then the pane itself.
 jump() { tmux switch-client -t "$1" \; select-window -t "$1" \; select-pane -t "$1"; }
 
-cmd_go() { jump "$(resolve "${1:?usage: pitwall go @N}")"; }
+cmd_go() {
+  id=$(resolve "${1:?usage: pitwall go @N}")
+  jump "$id" && feature_use visit-lane
+}
 
 # answer @N <1|2|3|…>: one key to a lane that is asking, as if typed there; never to a lane that works.
 cmd_answer() {
@@ -93,6 +136,7 @@ cmd_answer() {
   case $key in [0-9] | y | n | Y | N) ;; *) echo "pitwall answer: one of the numbered answers (1, 2, 3…), or y / n" >&2; exit 1 ;; esac
   [ "$(tmux display -p -t "$pane" '#{@pitwall_state}')" = asking ] || { echo "pitwall answer: $1 is not asking" >&2; exit 1; }
   tmux send-keys -t "$pane" "$key"
+  feature_use answer
   echo "answered $key to $1"
 }
 
@@ -101,8 +145,20 @@ cmd_send() {
   pane=$(resolve "${1:?usage: pitwall send @N <message>}"); shift
   [ $# -gt 0 ] || { echo "usage: pitwall send @N <message>" >&2; exit 1; }
   [ "$(tmux display -p -t "$pane" '#{@pitwall_state}')" = gone ] && { echo "pitwall send: its agent has gone" >&2; exit 1; }
-  tmux send-keys -t "$pane" -l -- "$*" && tmux send-keys -t "$pane" Enter
+  tmux send-keys -t "$pane" -l -- "$*" && tmux send-keys -t "$pane" Enter && feature_use send
   echo "sent to $1"
+}
+
+cmd_handoff() {
+  case "${1:-}:$#" in
+    save:2)
+      if [ "$2" = --here ]; then pane=${TMUX_PANE:?pitwall handoff save --here needs a tmux pane}
+      else pane=$(resolve "$2") || return; fi
+      "$DIR/bin/pitwall-handoff" save-lane "$pane" && feature_use handoff-create ;;
+    stage:3) pane=$(resolve "$3") || return; "$DIR/bin/pitwall-handoff" stage "$2" "$pane" && feature_use handoff-stage ;;
+    list:1 | show:2) feature_use handoff-list; exec "$DIR/bin/pitwall-handoff" "$@" ;;
+    *) echo "usage: pitwall handoff save <@N|--here> < note.md | list | show ID | stage ID @N" >&2; return 1 ;;
+  esac
 }
 
 # Visiting a window: its panes that finished while you were away become idle (the tmux hook calls this).
@@ -123,6 +179,7 @@ next_id() {
 cmd_next() {
   id=$(next_id)
   if [ "${1:-}" = --dry ]; then echo "$id"; return; fi
+  feature_use next
   if [ -n "$id" ]; then jump "$id"; else tmux display-message "pitwall: nothing else needs you"; fi
 }
 
@@ -233,6 +290,7 @@ cmd_move() {
   esac
   [ -n "$win" ] || { echo "pitwall: no window $src" >&2; exit 1; }
   move_window "$win" "$ws"
+  feature_use move
 }
 
 cmd_ws() {
@@ -245,75 +303,277 @@ cmd_ws() {
       ;;
     new)
       ws=${2:?usage: pitwall ws new <name> [dir]}
-      tmux new-session -d -s "$ws" -c "${3:-$HOME}" && echo "workspace $ws"
+      tmux new-session -d -s "$ws" -c "${3:-$HOME}" && { feature_use workspace-create; echo "workspace $ws"; }
       ;;
-    go) tmux switch-client -t "=${2:?usage: pitwall ws go <name>}" ;;
+    go) tmux switch-client -t "=${2:?usage: pitwall ws go <name>}" && feature_use visit-workspace ;;
     rename)
       old=${2:?usage: pitwall ws rename <old> <new>} new=${3:?usage: pitwall ws rename <old> <new>}
       tmux rename-session -t "=$old" "$new" || exit 1
+      feature_use workspace-rename
       for w in $(tmux list-windows -t "=$new" -F '#{window_id}'); do follow "$w"; done
       echo "workspace $old is now $new"
       ;;
     close)
       ws=${2:?usage: pitwall ws close <name>}
-      busy=$(lanes | awk -F '\t' -v s="$ws" '$3 == s && $2 != "gone"' | wc -l | tr -d ' ')
-      if [ "$busy" != 0 ] && [ "${3:-}" != --force ]; then
-        echo "pitwall: $ws has $busy agent lane(s); move them first, or close with --force (their agents stop)" >&2
-        exit 1
+      if [ "${3:-}" != --force ]; then
+        rows=$(lanes "$ws") || return
+        busy=$(printf '%s\n' "$rows" | awk -F '\t' '$2 != "" && $2 != "gone" { n++ } END { print n+0 }')
+        if [ "$busy" -ne 0 ]; then
+          echo "pitwall: $ws has $busy agent lane(s); move them first, or close with --force (their agents stop)" >&2
+          exit 1
+        fi
       fi
-      tmux kill-session -t "=$ws" && echo "closed $ws"
+      tmux kill-session -t "=$ws" && { feature_use workspace-close; echo "closed $ws"; }
       ;;
     _rows) workspaces ;;
     *) echo "usage: pitwall ws [ls] | new <name> [dir] | go <name> | rename <old> <new> | close <name> [--force]" >&2; exit 1 ;;
   esac
 }
 
-# --- OpenTimeline ------------------------------------------------------------------------------------------
+# --- plugins -------------------------------------------------------------------------------------------------
 
-# ot connect <token-file> [--url URL] | status | flush | disconnect | bell <person-token-file> | bell --refresh.
-# The seat's token reports signals. Needs you belongs to a person, so its count needs that person's token (bell).
-cmd_ot() {
-  conf=${XDG_CONFIG_HOME:-$HOME/.config}/pitwall/opentimeline
-  bellconf=${XDG_CONFIG_HOME:-$HOME/.config}/pitwall/opentimeline-bell
-  case ${1:-status} in
-    bell)
-      case ${2:-} in
-        --refresh)
-          [ -f "$bellconf" ] || return 0
-          tmux set -g @pitwall_bell_at "$(date +%s)"
-          url=$(head -1 "$conf" 2>/dev/null || echo http://127.0.0.1:4431)
-          n=$(curl -fsS -m 5 -H "authorization: Bearer $(cat "$(cat "$bellconf")")" "$url/v1/attention" 2>/dev/null |
-            python3 -I -c 'import json,sys; d=json.load(sys.stdin); print(len(d.get("items", d) if isinstance(d, dict) else d))' 2>/dev/null) || return 0
-          tmux set -g @pitwall_bell "$n"
-          ;;
-        off) rm -f "$bellconf"; tmux set -gu @pitwall_bell; echo "opentimeline: bell off" ;;
-        '') echo "usage: pitwall ot bell <person-token-file> | --refresh | off" >&2; exit 1 ;;
-        *)
-          [ -f "$2" ] || { echo "pitwall: no token file at $2" >&2; exit 1; }
-          mkdir -p "$(dirname "$bellconf")"
-          printf '%s\n' "$(cd "$(dirname "$2")" && pwd)/$(basename "$2")" >"$bellconf"
-          cmd_ot bell --refresh
-          echo "opentimeline: bell on, Needs you has $(tmux show -gqv @pitwall_bell 2>/dev/null || echo ?) item(s)"
-          ;;
+# A plugin is a folder with a plugin.toml and one executable pitwall calls: `hook <event> …` on lane events, `view`
+# for a dashboard view, `act <action> <row> [answer]` for an action that needs it, `cmd …` for `pitwall <command> …`.
+# Installed plugins are entries of $PLUGINS: a link to a folder (official, in plugins/, or local) or a git clone.
+# pitwall reads them through one index, written when they change and when tmux loads pitwall, never per event.
+PLUGINS=${XDG_DATA_HOME:-$HOME/.local/share}/pitwall/plugins
+PINDEX=$STATE/plugins.tsv
+LANE_EVENTS='lane.state lane.urgent' # what plugins can listen to
+BUILTINS='ls peek go answer send handoff seen next dash board stats features quota saved restore forget new done ws up move install doctor demo keys plugin plugins version help'
+
+manifest() { # manifest <dir> → key <tab> value, plugin.toml's top level (tables, if any, are not read)
+  awk '
+    function val(s,   out, c) {
+      sub(/^[ \t]*/, "", s)
+      if (substr(s, 1, 1) != "\"") { sub(/[ \t]*#.*$/, "", s); sub(/[ \t]*$/, "", s); return s }
+      s = substr(s, 2); out = ""
+      while (length(s)) {
+        c = substr(s, 1, 1)
+        if (c == "\\") { out = out substr(s, 2, 1); s = substr(s, 3); continue }
+        if (c == "\"") break
+        out = out c; s = substr(s, 2)
+      }
+      return out
+    }
+    /^[ \t]*\[/ { exit }
+    match($0, /^[ \t]*[A-Za-z_]+[ \t]*=/) { k = substr($0, RSTART, RLENGTH); sub(/[ \t]*=$/, "", k); sub(/^[ \t]*/, "", k); printf "%s\t%s\n", k, val(substr($0, RSTART + RLENGTH)) }
+  ' "$1/plugin.toml"
+}
+
+vge() { # vge <a> <b>: version a is b or newer
+  awk -v a="$1" -v b="$2" 'BEGIN { n = split(a, x, "."); m = split(b, y, "."); for (i = 1; i <= (n > m ? n : m); i++) { if (x[i] + 0 > y[i] + 0) exit 0; if (x[i] + 0 < y[i] + 0) exit 1 } exit 0 }'
+}
+
+# plugin_read <dir>: the manifest into p_*, checked. Prints why on stderr and fails when the plugin cannot load.
+plugin_read() {
+  p_name='' p_description='' p_version='' p_pitwall='' p_run='' p_events='' p_view='' p_command='' p_segment='' p_segment_color='' p_segment_where=''
+  [ -f "$1/plugin.toml" ] || { echo "pitwall: no plugin.toml in $1" >&2; return 1; }
+  while IFS="$TAB" read -r k v; do
+    case $k in
+      name) p_name=$v ;; description) p_description=$v ;; version) p_version=$v ;; pitwall) p_pitwall=$v ;; run) p_run=$v ;;
+      events) p_events=$v ;; view) p_view=$v ;; command) p_command=$v ;; segment) p_segment=$v ;; segment_color) p_segment_color=$v ;; segment_where) p_segment_where=$v ;;
+    esac
+  done <<EOF
+$(manifest "$1")
+EOF
+  case $p_name in '' | *[!a-z0-9-]* | -*) echo "pitwall: $1: name must be lowercase letters, digits and dashes" >&2; return 1 ;; esac
+  case $p_run in '' | /* | *..*) echo "pitwall: $p_name: run must be a path inside the plugin" >&2; return 1 ;; esac
+  [ -x "$1/$p_run" ] || { echo "pitwall: $p_name: $p_run is not an executable file" >&2; return 1; }
+  if [ -n "$p_pitwall" ]; then
+    vge "$(cat "$DIR/version.txt")" "${p_pitwall#>=}" || { echo "pitwall: $p_name needs pitwall $p_pitwall (this is $(cat "$DIR/version.txt"))" >&2; return 1; }
+  fi
+  for e in $p_events; do case " $LANE_EVENTS " in *" $e "*) ;; *) echo "pitwall: $p_name: no event called $e (there are: $LANE_EVENTS)" >&2; return 1 ;; esac; done
+  case ${p_segment_where:-status} in status | rule) ;; *) echo "pitwall: $p_name: segment_where is status or rule" >&2; return 1 ;; esac
+  if [ -n "$p_command" ]; then
+    case " $BUILTINS " in *" $p_command "*) echo "pitwall: $p_name: pitwall $p_command is pitwall's own" >&2; return 1 ;; esac
+  fi
+  return 0
+}
+
+provides() { # what the last plugin_read found, in a few words → $pv
+  pv=''
+  [ -n "$p_view" ] && pv="$pv, the ${p_view} view"
+  [ -n "$p_command" ] && pv="$pv, pitwall $p_command"
+  [ -n "$p_events" ] && pv="$pv, on $(echo "$p_events" | sed 's/ /, /g')"
+  [ -n "$p_segment" ] && pv="$pv, $p_segment in the status line"
+  pv=${pv#, }
+}
+
+source_of() { # source_of <entry> → where it comes from
+  if [ -L "$1" ]; then
+    t=$(readlink "$1")
+    case $t in "$DIR/plugins/"*) echo official ;; *) echo "$t" | sed "s|^$HOME|~|" ;; esac
+  elif [ -d "$1/.git" ]; then
+    echo "$(git -C "$1" remote get-url origin 2>/dev/null)@$(git -C "$1" rev-parse --short HEAD 2>/dev/null)"
+  else echo '?'; fi
+}
+
+plugin_index() { # plugin_index: the index pitwall reads (name dir run events view command segment colour where), then the segments
+  mkdir -p "$STATE"
+  : >"$PINDEX.$$"
+  for d in "$PLUGINS"/*; do
+    [ -e "$d" ] || continue
+    plugin_read "$d" 2>/dev/null || { echo "pitwall: plugin $(basename "$d") left out: $(plugin_read "$d" 2>&1 >/dev/null)" >&2; continue; }
+    d=$(cd "$d" && pwd -P)
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$p_name" "$d" "$d/$p_run" "${p_events:--}" "${p_view:--}" "${p_command:--}" "${p_segment:--}" "${p_segment_color:-asking}" "${p_segment_where:-status}" >>"$PINDEX.$$"
+  done
+  mv -f "$PINDEX.$$" "$PINDEX"
+  tmux has-session 2>/dev/null || return 0
+  # each plugin's piece of the status line: its glyph and @pitwall_seg_<name>, shown while that holds something.
+  # On the panes' bottom rule when it asks for it and the tabs layout draws one; at the top otherwise.
+  segs='' rule=''
+  tabs=$(tmux show -gqv @pitwall-layout)
+  while IFS="$TAB" read -r n _ _ _ _ _ g c where; do
+    [ "$g" = - ] && continue
+    case $c in
+      asking) col=$(tmux show -gqv @pitwall-color-asking) col=${col:-#f59e0b} ;;
+      done) col=$(tmux show -gqv @pitwall-color-done) col=${col:-#00c758} ;;
+      gone) col=$(tmux show -gqv @pitwall-color-gone) col=${col:-#fb2c36} ;;
+      *) col='#9ca3af' ;;
+    esac
+    o="@pitwall_seg_$(echo "$n" | tr - _)"
+    if [ "$where" = rule ] && [ "$tabs" = tabs ]; then rule="$rule#{?#{&&:#{$o},#{!=:#{$o},0}},#[fg=$col]$g #{$o}#[fg=#4b5563] · ,}"; continue; fi
+    case $c in asking | done | gone) segs="$segs#{?#{&&:#{$o},#{!=:#{$o},0}},#[fg=$col bold]$g #{$o}#[nobold]  ,}" ;; *) segs="$segs#{?#{&&:#{$o},#{!=:#{$o},0}},#[fg=$col]$g #{$o}  ,}" ;; esac
+  done <"$PINDEX"
+  tmux set -g @pitwall-segments "$segs" \; set -g @pitwall-rule-segments "$rule" 2>/dev/null || true
+}
+
+cmd__emit() { # _emit <event> <args…>: to every plugin that listens, each in the background
+  [ -s "$PINDEX" ] || return 0
+  ev=$1; shift
+  a=''; for x in "$@"; do a="$a '$x'"; done
+  while IFS="$TAB" read -r _ _ run events _; do
+    case " $events " in *" $ev "*) tmux run-shell -b "PITWALL='$DIR/bin/pitwall' '$run' hook '$ev'$a" >/dev/null 2>&1 || true ;; esac
+  done <"$PINDEX"
+}
+
+plugin_command() { # plugin_command <name> <args…>: `pitwall <name> …` when a plugin provides it
+  [ -s "$PINDEX" ] || return 1
+  command_row=$(awk -F '\t' -v c="$1" '$6 == c { print $1 "\t" $3; exit }' "$PINDEX")
+  [ -n "$command_row" ] || return 1
+  feature_use "${command_row%%"$TAB"*}" command
+  shift
+  PITWALL="$DIR/bin/pitwall" exec "${command_row#*"$TAB"}" cmd "$@"
+}
+
+yes_to() { # yes_to <question> [--yes]
+  [ "${2:-}" = --yes ] && return 0
+  [ -t 0 ] || { echo "pitwall: not a terminal to ask in; run it again with --yes" >&2; return 1; }
+  printf '%s [y/N] ' "$1"
+  read -r a
+  case $a in y | Y | yes) return 0 ;; esac
+  return 1
+}
+
+entry() { # entry <name> → $ent, the plugin's entry; fails on a name that is not one
+  case $1 in '' | *[!a-z0-9-]* | -*) echo "pitwall: no plugin called $1" >&2; return 1 ;; esac
+  ent="$PLUGINS/$1"
+}
+
+# plugin add <spec> [--yes]: an official plugin by name, a local folder, or a git repo (owner/repo[@ref], or a URL).
+# A repo's code runs on your lane events, so it is shown first and installed only after a yes.
+plugin_add() {
+  spec=${1:?usage: pitwall plugin add <name | folder | owner/repo[@ref] | git URL> [--yes]} yes=${2:-}
+  mkdir -p "$PLUGINS"
+  case $spec in
+    /* | ./* | ../* | "~"*)
+      src=$(printf '%s' "$spec" | sed "s|^~|$HOME|")
+      [ -d "$src" ] || { echo "pitwall: no folder at $spec" >&2; exit 1; }
+      src=$(cd "$src" && pwd)
+      plugin_read "$src" || exit 1
+      ;;
+    *[/:]*)
+      ref=''
+      case $spec in
+        *://* | git@*) url=$spec ;;
+        *) ref=${spec#*@}; [ "$ref" = "$spec" ] && ref=''; url="https://github.com/${spec%@*}" ;;
       esac
+      new="$PLUGINS/.new.$$"
+      git clone -q --depth 1 ${ref:+--branch "$ref"} "$url" "$new" || { echo "pitwall: could not clone $url" >&2; exit 1; }
+      if ! plugin_read "$new"; then rm -rf "${PLUGINS:?}/.new.$$"; exit 1; fi
+      if [ -e "$PLUGINS/$p_name" ]; then rm -rf "${PLUGINS:?}/.new.$$"; echo "pitwall: $p_name is installed already (pitwall plugin update $p_name)" >&2; exit 1; fi
+      provides
+      echo "$p_name ${p_version:-?} from $url at $(git -C "$new" rev-parse --short HEAD)"
+      [ -n "$p_description" ] && echo "  $p_description"
+      echo "  runs $p_run with: ${pv:-nothing}"
+      if ! yes_to "Install it? Its code runs on your machine." "$yes"; then rm -rf "${PLUGINS:?}/.new.$$"; echo "pitwall: not installed"; exit 1; fi
+      mv "$new" "$PLUGINS/$p_name"
+      echo "pitwall: $p_name installed"
+      plugin_index # reads every plugin into p_*: last
+      return 0
       ;;
-    connect)
-      file=${2:?usage: pitwall ot connect <token-file> [--url URL]}
-      [ -f "$file" ] || { echo "pitwall: no token file at $file" >&2; exit 1; }
-      url=http://127.0.0.1:4431
-      [ "${3:-}" = --url ] && url=${4:?usage: pitwall ot connect <token-file> --url URL}
-      mkdir -p "$(dirname "$conf")"
-      printf '%s\n%s\n' "$url" "$(cd "$(dirname "$file")" && pwd)/$(basename "$file")" >"$conf"
-      "$DIR/bin/pitwall-signal" --status
+    *)
+      src="$DIR/plugins/$spec"
+      [ -d "$src" ] || { echo "pitwall: no official plugin called $spec (there are: $(ls "$DIR/plugins" | tr '\n' ' '))" >&2; exit 1; }
+      plugin_read "$src" || exit 1
       ;;
-    status) "$DIR/bin/pitwall-signal" --status ;;
-    flush) "$DIR/bin/pitwall-signal" ;;
-    disconnect) rm -f "$conf" && echo "opentimeline: disconnected" ;;
-    *) echo "usage: pitwall ot connect <token-file> [--url URL] | status | flush | disconnect" >&2; exit 1 ;;
+  esac
+  if [ -e "$PLUGINS/$p_name" ] && [ "$(readlink "$PLUGINS/$p_name")" != "$src" ]; then
+    echo "pitwall: $p_name is installed already, from $(source_of "$PLUGINS/$p_name")" >&2; exit 1
+  fi
+  ln -sfn "$src" "$PLUGINS/$p_name"
+  provides
+  echo "pitwall: $p_name ${p_version:-} installed${pv:+: $pv}"
+  plugin_index # reads every plugin into p_*: last
+}
+
+plugin_update() { # plugin update [name] [--yes]: a repo's new commits, shown, then taken after a yes
+  yes=''; names=''
+  for a in "$@"; do case $a in --yes) yes=--yes ;; *) names="$names $a" ;; esac; done
+  [ -n "$names" ] || names=$(ls "$PLUGINS" 2>/dev/null)
+  for n in $names; do
+    entry "$n" || continue
+    [ -e "$ent" ] || { echo "pitwall: no plugin called $n" >&2; continue; }
+    [ -L "$ent" ] && { echo "$n: follows its folder, nothing to update"; continue; }
+    git -C "$ent" fetch -q --depth 1 origin 2>/dev/null || { echo "$n: could not fetch" >&2; continue; }
+    old=$(git -C "$ent" rev-parse --short HEAD) new=$(git -C "$ent" rev-parse --short FETCH_HEAD)
+    [ "$old" = "$new" ] && { echo "$n: up to date ($old)"; continue; }
+    echo "$n: $old → $new, $(git -C "$ent" diff --shortstat HEAD FETCH_HEAD | sed 's/^ //')"
+    yes_to "Take it?" "$yes" || continue
+    git -C "$ent" reset -q --hard FETCH_HEAD
+    plugin_read "$ent" || { git -C "$ent" reset -q --hard "$old"; echo "$n: kept $old" >&2; continue; }
+    echo "$n: now at $new"
+  done
+  plugin_index
+}
+
+plugin_rm() { # plugin rm <name>: a link goes, the folder it points at stays; a clone is deleted
+  entry "${1:?usage: pitwall plugin rm <name>}" || exit 1
+  [ -e "$ent" ] || [ -L "$ent" ] || { echo "pitwall: no plugin called $1" >&2; exit 1; }
+  if [ -L "$ent" ]; then unlink "$ent"; else rm -rf "${PLUGINS:?}/$1"; fi
+  tmux set -gu "@pitwall_seg_$(echo "$1" | tr - _)" 2>/dev/null || true
+  plugin_index
+  echo "pitwall: $1 removed"
+}
+
+cmd_plugin() {
+  case ${1:-ls} in
+    add) shift; plugin_add "$@" ;;
+    rm | remove) shift; plugin_rm "$@" ;;
+    update) shift; plugin_update "$@" ;;
+    ls)
+      found=''
+      for d in "$PLUGINS"/*; do
+        [ -e "$d" ] || continue
+        found=1
+        if plugin_read "$d" 2>/dev/null; then provides; printf '%-16s %-8s %s\n  %s\n' "$p_name" "${p_version:--}" "$(source_of "$d")" "$pv"
+        else printf '%-16s %-8s %s\n  ✗ %s\n' "$(basename "$d")" - "$(source_of "$d")" "$(plugin_read "$d" 2>&1 >/dev/null)"; fi
+      done
+      [ -n "$found" ] || echo "No plugins. Official: $(ls "$DIR/plugins" | tr '\n' ' ')· pitwall plugin add <name | folder | owner/repo>"
+      ;;
+    _load) # tmux loads pitwall: OpenTimeline, once core, comes back as a plugin for a setup that used it; then the index
+      if [ ! -e "$STATE/plugins-migrated" ]; then
+        mkdir -p "$STATE" && : >"$STATE/plugins-migrated"
+        if [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/pitwall/opentimeline" ] && [ ! -e "$PLUGINS/opentimeline" ]; then plugin_add opentimeline >/dev/null 2>&1 || true; fi
+      fi
+      plugin_index
+      ;;
+    _index) plugin_index ;;
+    *) echo "usage: pitwall plugin [ls] | add <name | folder | owner/repo[@ref] | git URL> [--yes] | rm <name> | update [name] [--yes]" >&2; exit 1 ;;
   esac
 }
 
-# _escalate <pane> <since>: the hook's ten-minute check. Still asking since then: red in tmux, urgent in OpenTimeline.
+# _escalate <pane> <since>: the hook's ten-minute check. Still asking since then: red in tmux, lane.urgent for plugins.
 # _question <pane> <since>: what a lane that asks is asking, read once from its screen (never the transcript), kept on
 # the pane as @pitwall_question and @pitwall_choices until it moves on. "Do you want to proceed?" under a command
 # becomes "Allow <command>?"; the numbered answers become "1 Yes · 2 No". Prints both, tab-separated.
@@ -370,7 +630,7 @@ cmd__escalate() {
   mins=$((($(date +%s) - since) / 60))
   tmux set -p -t "$pane" @pitwall_urgent 1
   for c in $(tmux list-clients -F '#{client_name}'); do tmux refresh-client -S -t "$c" \; display-message -c "$c" -d 4000 "◆ $name has waited ${mins}m"; done
-  [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/pitwall/opentimeline" ] && "$DIR/bin/pitwall-signal" "$pane" "${mins}m" asking urgent
+  cmd__emit lane.urgent "$pane" "$mins"
   return 0
 }
 
@@ -418,58 +678,84 @@ resume_cmd() { # resume_cmd <harness> <sid>
 
 is_shell() { case $1 in zsh | -zsh | bash | -bash | fish | sh | -sh | login) return 0 ;; *) return 1 ;; esac; }
 
-cmd_restore() {
-  mode=${1:-}
+restore_plan() (
+  mode=$1 wanted=${2:-}
   server=$(server_pid)
   running=$(tmux list-panes -a -F '#{@pitwall_session}' 2>/dev/null || true)
-  plan=$(records | while IFS="$TAB" read -r harness sid cwd sname widx wname pidx rserver updated; do
-    printf '%s\n' "$running" | grep -qx "$sid" && continue
-    [ "$rserver" = "$server" ] && [ "$mode" != --all ] && continue
-    printf '%s\n' "$harness$TAB$sid$TAB$cwd$TAB$sname$TAB$widx$TAB$wname$TAB$pidx"
-  done)
-  count=$(printf '%s' "$plan" | awk 'NF' | wc -l | tr -d ' ')
-  if [ "$mode" = --count ]; then echo "$count"; return; fi
-  if [ "$count" = 0 ]; then echo "pitwall: nothing to restore"; return; fi
+  records | PITWALL_RESTORE_ACTIVE="$running" awk -F '\t' -v server="$server" -v mode="$mode" -v wanted="$wanted" '
+    BEGIN { n = split(ENVIRON["PITWALL_RESTORE_ACTIVE"], list, "\n"); for (i = 1; i <= n; i++) active[list[i]] = 1 }
+    NF >= 9 && $2 ~ /^[A-Za-z0-9:_.-]+$/ && !active[$2] &&
+      ($8 != server || mode == "--all") && (wanted == "" || ("id:" $2) == ("id:" wanted))'
+)
 
-  used=''
-  printf '%s\n' "$plan" | while IFS="$TAB" read -r harness sid cwd sname widx wname pidx; do
+cmd_restore() (
+  mode=${1:-} wanted=''
+  if [ "$mode" = --one ]; then
+    wanted=${2:-}
+    [ -n "$wanted" ] || { echo "usage: pitwall restore --one <session-id>" >&2; return 1; }
+  fi
+  case $mode in
+    --count | --list | --dry) ;;
+    *)
+      lock=pitwall-restore
+      tmux wait-for -L "$lock" || return 1
+      trap 'tmux wait-for -U "$lock" 2>/dev/null' EXIT
+      trap 'exit 1' HUP INT TERM
+      ;;
+  esac
+  plan=$(restore_plan "$mode" "$wanted")
+  if [ "$mode" = --list ]; then [ -z "$plan" ] || printf '%s\n' "$plan"; return 0; fi
+  count=$(printf '%s\n' "$plan" | awk 'NF' | wc -l | tr -d ' ')
+  if [ "$mode" = --count ]; then echo "$count"; return; fi
+  if [ "$count" = 0 ]; then
+    if [ "$mode" = --one ]; then echo "pitwall: this lane is no longer recoverable"; return 1; fi
+    echo "pitwall: nothing to restore"; return
+  fi
+
+  used='' restored=0
+  while IFS="$TAB" read -r harness sid cwd sname widx wname pidx _server _updated; do
     cmd=$(resume_cmd "$harness" "$sid") || { echo "skip  $sname:$widx $wname: unknown agent $harness"; continue; }
-    echo "$( [ "$mode" = --dry ] && echo would || echo open)  $sname:$widx $wname ($harness) in $(printf '%s' "$cwd" | sed "s|^$HOME|~|")"
+    if [ "$mode" = --one ]; then
+      [ -d "$cwd" ] || { echo "pitwall: saved folder no longer exists"; return 1; }
+    else
+      echo "$( [ "$mode" = --dry ] && echo would || echo open)  $sname:$widx $wname ($harness) in $(printf '%s' "$cwd" | sed "s|^$HOME|~|")"
+    fi
     [ "$mode" = --dry ] && continue
     [ -d "$cwd" ] || cwd=$HOME
     if ! tmux has-session -t "=$sname" 2>/dev/null; then
       pane=$(tmux new-session -d -P -F '#{pane_id}' -s "$sname" -n "$wname" -c "$cwd")
+      [ -n "$pane" ] || continue
       [ "$(tmux display -p -t "$pane" '#{window_index}')" = "$widx" ] || tmux move-window -s "$pane" -t "=$sname:$widx" 2>/dev/null || true
     elif ! tmux list-windows -t "=$sname" -F '#{window_index}' | grep -qx "$widx"; then
       pane=$(tmux new-window -d -P -F '#{pane_id}' -t "=$sname:$widx" -n "$wname" -c "$cwd")
+    elif [ "$mode" = --one ] && [ "$(tmux display -p -t "=$sname:$widx" '#{window_name}')" != "$wname" ]; then
+      pane=$(tmux new-window -d -P -F '#{pane_id}' -t "=$sname:" -n "$wname" -c "$cwd")
     else
       first=$(tmux display -p -t "=$sname:$widx.0" '#{pane_id} #{pane_current_command}' 2>/dev/null ||
         tmux list-panes -t "=$sname:$widx" -F '#{pane_id} #{pane_current_command}' | head -1)
       case " $used " in *" $sname:$widx "*) first='' ;; esac
-      if [ -n "$first" ] && is_shell "${first#* }"; then pane=${first%% *}
+      if [ "$mode" != --one ] && [ -n "$first" ] && is_shell "${first#* }"; then pane=${first%% *}
       else
         pane=$(tmux split-window -d -P -F '#{pane_id}' -t "=$sname:$widx" -c "$cwd")
-        tmux select-layout -t "=$sname:$widx" tiled >/dev/null
+        [ "$mode" = --one ] || tmux select-layout -t "=$sname:$widx" tiled >/dev/null
       fi
     fi
+    [ -n "$pane" ] || continue
     used="$used $sname:$widx"
-    tmux set -p -t "$pane" @pitwall_session "$sid" \; send-keys -t "$pane" "cd '$(printf '%s' "$cwd" | sed "s/'/'\\\\''/g")' && $cmd" Enter
+    tmux set -p -t "$pane" @pitwall_session "$sid" \; send-keys -t "$pane" "cd '$(printf '%s' "$cwd" | sed "s/'/'\\\\''/g")' && $cmd" Enter || continue
+    restored=$((restored + 1))
     # The record now points at this server, so restoring again does not open it twice.
     f="$STATE/lanes/$sid"
     if [ -f "$f" ]; then awk -F '\t' -v OFS='\t' -v s="$(server_pid)" '{ $8 = s; print }' "$f" >"$f.tmp" && mv -f "$f.tmp" "$f"; fi
-  done
-  [ "$mode" = --dry ] || { tmux set -g @pitwall_restorable 0 2>/dev/null; echo "attach with: tmux attach"; }
-}
-
-# The popup behind prefix R: the plan, then one key to go.
-cmd_restore_prompt() {
-  plan=$(cmd_restore --dry)
-  printf '\n  \033[1mpitwall\033[0m · restore\n\n%s\n\n' "$(printf '%s\n' "$plan" | sed 's/^/  /')"
-  case $plan in "pitwall: nothing to restore") sleep 1.5; return ;; esac
-  printf '  \033[38;2;245;158;11mi\033[0m or ⏎ restore   \033[38;2;156;163;175mh q\033[0m cancel '
-  stty -icanon -echo 2>/dev/null; k=$(dd bs=1 count=1 2>/dev/null); stty icanon echo 2>/dev/null
-  case $k in i | '' | "$(printf '\n')" | "$(printf '\r')") printf '\n\n'; cmd_restore | sed 's/^/  /'; sleep 1.5 ;; esac
-}
+  done <<EOF
+$plan
+EOF
+  [ "$mode" = --dry ] && return 0
+  [ "$restored" -eq 0 ] || feature_use restore
+  left=$(restore_plan '' | awk 'END { print NR }')
+  tmux set -g @pitwall_restorable "$left" 2>/dev/null
+  if [ "$mode" = --one ]; then [ "$restored" -eq 1 ]; else echo "attach with: tmux attach"; fi
+)
 
 cmd_forget() {
   [ -n "${1:-}" ] || { echo "usage: pitwall forget <session id or its first characters>" >&2; exit 1; }
@@ -490,7 +776,7 @@ cmd_new() {
   command -v gwm >/dev/null || { echo "pitwall: gwm is not installed (https://github.com/kbrdn1/gwm)" >&2; exit 1; }
   repo=$(tmux display -p '#{pane_current_path}')
   pane=$(tmux new-window -P -F '#{pane_id}' -n "$name" -c "$repo")
-  tmux send-keys -t "$pane" "gwm create --name '$name' && cd \"\$(gwm path '$name')\" && $agent" Enter
+  tmux send-keys -t "$pane" "gwm create --name '$name' && cd \"\$(gwm path '$name')\" && $agent" Enter && feature_use new-worktree
 }
 
 # done @N: review the lane's diff in lumen, then, only on an explicit y, close the window and remove the worktree.
@@ -501,6 +787,7 @@ cmd_done() {
 
 cmd__done() {
   id=$1
+  feature_use worktree-done
   path=$(pwd)
   command -v lumen >/dev/null && lumen diff || git -c color.ui=always diff | less -R
   printf '\n  Remove the worktree %s and close its window? [y/N] ' "${path##*/}"
@@ -791,7 +1078,8 @@ up_save() { # up_save [workspace] [--auto]: a recipe from a workspace that is op
   mkdir -p "$UPDIR" "$STATE/up-saved"; out=$UPDIR/$ws.toml new=$UPDIR/.$ws.toml.$$ sumf=$STATE/up-saved/$ws
   if [ -n "$auto" ]; then
     [ -f "$out" ] || return 0 # only a workspace you saved once
-    if [ -f "$sumf" ]; then [ "$(cat "$sumf")" = "$(sum_of "$out")" ] || return 0 # edited by hand since: yours now
+    old_sum=$(sum_of "$out")
+    if [ -f "$sumf" ]; then [ "$(cat "$sumf")" = "$old_sum" ] || return 0 # edited by hand since: yours now
     else head -1 "$out" | grep -q '^# pitwall up .*: saved from the open workspace' || return 0; fi
   fi
   q() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
@@ -826,11 +1114,16 @@ up_save() { # up_save [workspace] [--auto]: a recipe from a workspace that is op
   } >"$new"
   n=$(grep -c '^\[\[tab\]\]' "$new")
   if [ -n "$auto" ]; then # quietly, and never down to nothing (a workspace closing tab by tab)
-    if [ "$n" -gt 0 ] && ! cmp -s "$new" "$out"; then mv -f "$new" "$out" && sum_of "$out" >"$sumf"; else rm -f "$new"; fi
+    if [ "$n" -eq 0 ] || cmp -s "$new" "$out"; then rm -f "$new"; return 0; fi
+  elif [ -f "$out" ] && ! cmp -s "$new" "$out"; then cp -p "$out" "$out.bak"; fi
+  # Only generated bytes can authorize a future autosave.
+  new_sum=$(sum_of "$new")
+  if [ -n "$auto" ] && [ "$old_sum" != "$(sum_of "$out" 2>/dev/null)" ]; then
+    rm -f "$new"
     return 0
   fi
-  [ -f "$out" ] && ! cmp -s "$new" "$out" && cp -p "$out" "$out.bak"
-  mv -f "$new" "$out" && sum_of "$out" >"$sumf"
+  mv -f "$new" "$out" && printf '%s\n' "$new_sum" >"$sumf"
+  [ -z "$auto" ] || return 0
   echo "✓ wrote $(printf '%s' "$out" | sed "s|^$HOME|~|") from the $ws workspace: $n tab$( [ "$n" = 1 ] || echo s), kept current from now on"
 }
 
@@ -849,7 +1142,7 @@ cmd_up() {
   while :; do
     case ${1:-} in
       --list) shift; up_list "$@"; return ;;
-      --save) shift; up_save "${1:-}"; return ;;
+      --save) shift; up_save "${1:-}"; feature_use workspace-recipe-save; return ;;
       --dry) dry=1; shift ;;
       --yes) yes=--yes; shift ;;
       *) break ;;
@@ -858,6 +1151,7 @@ cmd_up() {
   file=$(up_find "${1:-}") || { echo "pitwall up: no recipe ${1:+for $1 }(a .pitwall.toml here, or $(printf '%s' "$UPDIR" | sed "s|^$HOME|~|")/<name>.toml)" >&2; exit 1; }
   up_trust "$file" $yes || exit 1
   case $file in "$UPDIR"/*) ;; *) mkdir -p "$UPDIR" && n=$(up_name "$file") && [ ! -f "$UPDIR/$n.toml" ] && echo "$file" >"$UPDIR/$n.link" ;; esac # --list knows it next time
+  [ -n "$dry" ] || feature_use workspace-recipe-run
   up_run "$file" "$dry"
 }
 
@@ -886,6 +1180,10 @@ cmd_doctor() {
     check "Hermes hooks, tool calls included" 'grep -q "pitwall-hook PostToolUse hermes" "${HERMES_HOME:-$HOME/.hermes}/config.yaml" && grep -q "^  post_tool_call:" "${HERMES_HOME:-$HOME/.hermes}/config.yaml"' "pitwall install --write"
   [ -d "$HOME/.claude/skills" ] && check "the pitwall skill for agents" '[ -e "$HOME/.claude/skills/pitwall/SKILL.md" ]' "pitwall install --write"
   check "python3 (only for install)" 'command -v python3 >/dev/null'
+  for d in "$PLUGINS"/*; do
+    [ -e "$d" ] || continue
+    check "plugin $(basename "$d")" 'plugin_read "$d" 2>/dev/null && grep -q "^$p_name	" "$PINDEX" 2>/dev/null' "$(plugin_read "$d" 2>&1 >/dev/null | sed 's/^pitwall: //' | grep . || echo 'pitwall plugin _index')"
+  done
   return $ok
 }
 
@@ -949,20 +1247,21 @@ cmd_demo() {
 }
 
 case ${1:-} in
-  ls) shift; cmd_ls "${1:-}" ;;
+  ls) shift; feature_use lane-list; cmd_ls "$@" ;;
   peek) shift; cmd_peek "$@" ;;
   go) shift; cmd_go "$@" ;;
   answer) shift; cmd_answer "$@" ;;
   send) shift; cmd_send "$@" ;;
+  handoff) shift; cmd_handoff "$@" ;;
   seen) shift; cmd_seen "$@" ;;
   next) shift; cmd_next "${1:-}" ;;
   dash | board) exec "$DIR/bin/pitwall-dash" ;;
   _lanes) lanes ;;
-  stats) shift; cmd_stats "$@" ;;
+  stats) shift; [ "${2:-}" = --plain ] || feature_use lane-stats; cmd_stats "$@" ;;
+  features) shift; feature_report "$@" ;;
   quota) shift; cmd_quota "${1:-}" ;;
   saved) cmd_saved ;;
-  restore) shift; cmd_restore "${1:-}" ;;
-  _restore-prompt) cmd_restore_prompt ;;
+  restore) shift; cmd_restore "$@" ;;
   forget) shift; cmd_forget "${1:-}" ;;
   new) shift; cmd_new "$@" ;;
   done) shift; cmd_done "$@" ;;
@@ -974,7 +1273,8 @@ case ${1:-} in
   _resume-cmd) shift; resume_cmd "$@" ;;
   _autosave) shift; cmd__autosave "$@" ;;
   _reindex) shift; cmd__reindex "$@" ;;
-  ot) shift; cmd_ot "$@" ;;
+  plugin | plugins) shift; cmd_plugin "$@" ;;
+  _emit) shift; cmd__emit "$@" ;;
   _escalate) shift; cmd__escalate "$@" ;;
   _question) shift; cmd__question "$@" ;;
   install) shift; cmd_install "${1:-}" ;;
@@ -992,14 +1292,16 @@ In the dashboard             ? (with the search empty) shows these there too
   type             find lanes, workspaces, actions and commands; «rename ait» puts that action first
                    //text searches the lanes' output
   ctrl-n ctrl-e    down, up (the arrows too)
-  ⏎                go to the lane · switch to the workspace · open the story · run the action
+  ctrl-z           Inbox from Lanes; k marks a completion as read (search empty)
+  ctrl-q           create a handoff from a lane or import the selected story
+  ⏎                go to the lane · switch to the workspace · a plugin row's first action · run the action
   1 2 3            answer the lane under the cursor when it asks (search empty)
   space            read the lane's whole output (search empty)
   ctrl + key       an action at once, even mid-search: ctrl-d diff · ctrl-o nvim · ctrl-g lazygit · ctrl-p PR
                    ctrl-s write · ctrl-w move · ctrl-r rename · ctrl-v select · ctrl-t worktree · ctrl-y copy resume · ctrl-x close
-  shift-tab  →     every action on what is under the cursor, one key each (D branch diff · M move and go · a new lane
+  →                every action on what is under the cursor, one key each (D branch diff · M move and go · a new lane
                    · i interrupt · R restart, and the ones above)
-  tab              the other view: Lanes, OpenTimeline
+  tab shift-tab    next and previous view (Lanes, plugin views, Usage)
   ctrl-f           lanes by workspace, or by state; remembered
   up · ctrl-u      the workspace recipes: ⏎ brings one up
   ctrl-v           select a lane (or type «select idle»); then ctrl-x, ctrl-w, ctrl-s act on all of them
@@ -1007,6 +1309,9 @@ In the dashboard             ? (with the search empty) shows these there too
 EOF
     ;;
   -v | --version | version) cat "$DIR/version.txt" ;;
-  -h | --help | help | "") usage ;;
-  *) echo "pitwall: unknown command $1" >&2; usage >&2; exit 1 ;;
+  -h | --help | help | "")
+    usage
+    [ -s "$PINDEX" ] && awk -F '\t' '$6 != "-" { printf "  pitwall %-35s from the %s plugin\n", $6 " …", $1 }' "$PINDEX"
+    ;;
+  *) plugin_command "$@" || { echo "pitwall: unknown command $1" >&2; usage >&2; exit 1; } ;;
 esac

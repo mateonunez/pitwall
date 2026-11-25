@@ -3,7 +3,8 @@
 
 Prints one tab-separated line: model, context %, context tokens, raw total tokens, total tokens, output tokens,
 then input, cache-write, cache-read and output tokens (raw), the API-equivalent cost in dollars (empty when the
-model's price is unknown), the number of turns, and the epochs of the first and last of them.
+model's price is unknown), the number of turns, the epochs of the first and last of them, and the transcript's
+allocated disk space as a display string.
 Transcripts grow to tens of megabytes, so it reads only the bytes added since its last run and keeps running
 sums in ~/.cache/pitwall/stats. Context % is approximate: it compares the last turn's prompt with the window.
 """
@@ -21,6 +22,13 @@ def human(n):
         if n >= size:
             return f"{n / size:.1f}{unit}".replace(".0", "")
     return str(n)
+
+
+def disk_space(n):
+    for unit, size in (("GiB", 1024**3), ("MiB", 1024**2), ("KiB", 1024)):
+        if n >= size:
+            return f"{n / size:.1f}".removesuffix(".0") + f" {unit}"
+    return f"{n} B"
 
 
 # API list prices per million tokens: input, output, cache write (5 minutes), cache read. Claude's from Anthropic's
@@ -78,10 +86,10 @@ def main():
     if harness == "codex" and not (path and os.path.exists(path)):
         path = find_codex(sid)
     if not path or not os.path.exists(path):
-        print("\t" * 13)
+        print("\t" * 14)
         return
 
-    cache_dir = os.path.expanduser("~/.cache/pitwall/stats")
+    cache_dir = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "pitwall", "stats")
     os.makedirs(cache_dir, exist_ok=True)
     cache_path = os.path.join(cache_dir, hashlib.sha1(path.encode()).hexdigest())
     state = {"offset": 0, "total": 0, "out": 0, "ctx": 0, "window": 0, "model": "", "last_id": "",
@@ -92,13 +100,16 @@ def main():
             state.update(json.load(f))
     except (OSError, ValueError):
         pass
-    size = os.path.getsize(path)
-    if size < state["offset"]:  # the file was replaced: start over
-        state.update(offset=0, total=0, out=0, ctx=0, inp=0, cw=0, cr=0, o=0, cost=0.0, priced=True, turns=0, first=0, last=0)
-
-    with open(path, "rb") as f:
-        f.seek(state["offset"])
-        chunk = f.read()
+    try:
+        with open(path, "rb") as f:
+            file = os.fstat(f.fileno())
+            if file.st_size < state["offset"]:  # the file was replaced: start over
+                state.update(offset=0, total=0, out=0, ctx=0, inp=0, cw=0, cr=0, o=0, cost=0.0, priced=True, turns=0, first=0, last=0)
+            f.seek(state["offset"])
+            chunk = f.read()
+    except OSError:
+        print("\t" * 14)
+        return
     end = chunk.rfind(b"\n") + 1  # a half-written last line waits for the next run
     for raw in chunk[:end].splitlines():
         try:
@@ -169,7 +180,8 @@ def main():
         state["priced"] = bool(rates)
     cost = f"{state['cost']:.2f}" if state["priced"] and state["turns"] else ""
     print(f"{model}\t{pct}\t{state['ctx'] or ''}\t{state['total'] or ''}\t{human(state['total'])}\t{human(state['out'])}"
-          f"\t{state['inp']}\t{state['cw']}\t{state['cr']}\t{state['o']}\t{cost}\t{state['turns']}\t{state['first']}\t{state['last']}")
+          f"\t{state['inp']}\t{state['cw']}\t{state['cr']}\t{state['o']}\t{cost}\t{state['turns']}\t{state['first']}\t{state['last']}"
+          f"\t{disk_space(file.st_blocks * 512)}")
 
 
 if __name__ == "__main__":

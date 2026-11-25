@@ -32,48 +32,60 @@ if [ "$harness" = hermes ] && command -v sqlite3 >/dev/null 2>&1; then
   esac
 fi
 
-# The pane of this event when TMUX_PANE does not name a live one. Claude sometimes runs hooks without the tmux
+# Resolve an event without a trustworthy TMUX_PANE. Claude sometimes runs hooks without the tmux
 # environment (a long, forked session); Codex runs them in its shared app-server daemon, whose TMUX_PANE is
 # whatever pane first started it; Hermes runs them in its gateway, with no tmux at all. First the pane that
 # already holds this session; else the one agent pane of this harness in the session's directory; two Codex in
 # one directory are told apart by the thread name Codex puts in the pane title. Ambiguous or unknown: no pane,
 # rather than a wrong one.
 resolve() {
-  s=$(json session_id) c=$CWD p=''
-  [ -n "$s" ] && p=$(tmux list-panes -a -f "#{==:#{@pitwall_session},$s}" -F '#{pane_id}' 2>/dev/null | head -1)
+  c=$CWD p=''
+  if [ -n "$sid" ]; then
+    p=$(tmux list-panes -a -f "#{==:#{@pitwall_session},$sid}" -F '#{pane_id}' 2>/dev/null |
+      awk '!seen[$0]++ { p=$0; n++ } END { if (n == 1) print p; else if (n > 1) print "ambiguous" }')
+    [ "$p" = ambiguous ] && return
+  fi
   if [ -z "$p" ] && [ -n "$c" ]; then
     c=$(cd "$c" 2>/dev/null && pwd -P || printf '%s' "$c") # tmux reports the physical path (/private/var, not /var)
     t=''
-    [ "$harness" = codex ] && [ -n "$s" ] &&
-      t=$(grep -h "\"id\":\"$s\"" "${CODEX_HOME:-$HOME/.codex}/session_index.jsonl" 2>/dev/null | tail -1 | sed -n 's/.*"thread_name":"\([^"]*\)".*/\1/p')
-    p=$(tmux list-panes -a -F "#{pane_id}$TAB#{pane_current_path}$TAB#{pane_current_command}$TAB#{pane_title}" 2>/dev/null |
-      awk -F '\t' -v c="$c" -v h="$harness" -v t="$t" '
-        $2 == c && (h == "codex" ? $3 == "codex" : h == "hermes" ? ($4 ~ /^hermes/ || $3 ~ /^python/) : $3 ~ /^([0-9]+\.[0-9]+\.[0-9]+|claude|node)$/) {
-          n++; p = $1; if (t != "" && index($4, t) == 1) { m++; q = $1 } }
-        END { if (n == 1) print p; else if (m == 1) print q }')
+    [ "$harness" = codex ] && [ -n "$sid" ] &&
+      t=$(grep -F "\"id\":\"$sid\"" "${CODEX_HOME:-$HOME/.codex}/session_index.jsonl" 2>/dev/null | tail -1 | sed -n 's/.*"thread_name":"\([^"]*\)".*/\1/p')
+    p=$(tmux list-panes -a -F "#{pane_id}$TAB#{pane_current_path}$TAB#{pane_current_command}$TAB#{?#{@pitwall_session},#{@pitwall_session},-}$TAB#{pane_title}" 2>/dev/null |
+      awk -F '\t' -v c="$c" -v h="$harness" -v t="$t" -v e="$event" '
+        !seen[$1]++ && $2 == c &&
+          (h == "codex" ? $3 == "codex" : h == "hermes" ? ($5 ~ /^hermes/ || $3 ~ /^python/) : $3 ~ /^([0-9]+\.[0-9]+\.[0-9]+|claude|node)$/) {
+          n++
+          if (h == "codex" && $4 != "-" && e != "SessionStart") next
+          p = $1; if (t != "" && index($5, t) == 1) { m++; q = $1 } }
+        END { if (m == 1) print q; else if (n == 1) print p }')
   fi
   printf '%s' "$p"
 }
 
+idle_confirmation=''
 case $event in
   SessionStart) state=idle ;;
   UserPromptSubmit | PreToolUse | PostToolUse) state=working ;;
   PermissionRequest) state=asking ;;
   Notification)
-    # Claude: a permission prompt or a question waits for you; "idle for 60s" changes nothing.
-    case $input in
-      *permission_prompt* | *elicitation_dialog*) state=asking ;;
+    case $(json notification_type) in
+      permission_prompt | elicitation_dialog | elicitation_url_dialog) state=asking ;;
+      idle_prompt)
+        [ "$harness" = claude ] || exit 0
+        state=stop idle_confirmation=1
+        ;;
       *) exit 0 ;;
     esac
     ;;
   Stop)
     state=stop # idle or done, decided below by whether someone is looking at the lane
-    # Claude lists what still runs in the background. A subagent still at work means the lane still works (its
-    # end starts a new turn, whose Stop settles it); a background shell, a dev server say, does not.
+    # Only another agent keeps the lane working after the foreground turn ends.
     case $input in
-      *'"background_tasks":[{'*)
+      *'"background_tasks":[]'*) ;;
+      *'"background_tasks"'*)
         n=$(printf '%s' "$input" | python3 -I -c 'import json, sys
-print(sum(t.get("status") == "running" and t.get("type") != "shell" for t in json.load(sys.stdin).get("background_tasks") or []))' 2>/dev/null)
+print(sum(t.get("status") == "running" and t.get("type") in ("subagent", "teammate")
+          for t in json.load(sys.stdin).get("background_tasks") or [] if isinstance(t, dict)))' 2>/dev/null)
         [ "${n:-0}" -gt 0 ] && state=working
         ;;
     esac
@@ -83,22 +95,35 @@ print(sum(t.get("status") == "running" and t.get("type") != "shell" for t in jso
 esac
 
 sid=$(json session_id)
+case $sid in *[!A-Za-z0-9:_.-]*) exit 0 ;; esac
 
 # Tab-separated, and no field may be empty: tabs are whitespace to `read`, so an empty one would shift the rest.
 # (A control character would be safer, but tmux before 3.5 prints it escaped.) "-" stands for empty.
 pane_info() {
   [ -n "$TMUX_PANE" ] || return 1
-  info=$(tmux display -p -t "$TMUX_PANE" "#{?#{@pitwall_state},#{@pitwall_state},-}$TAB#{?#{@pitwall_session},#{@pitwall_session},-}$TAB#{window_id}$TAB#{?window_name,#{window_name},-}$TAB#{window_panes}$TAB#{pane_index}$TAB#{session_name}$TAB#{window_index}$TAB#{pid}$TAB#{?#{@pitwall-toast},#{@pitwall-toast},-}$TAB#{?#{@pitwall_quota_at},#{@pitwall_quota_at},0}$TAB#{?#{@pitwall_bell_at},#{@pitwall_bell_at},0}$TAB#{?#{@pitwall-urgent-after},#{@pitwall-urgent-after},600}" 2>/dev/null) || return 1
+  info=$(tmux display -p -t "$TMUX_PANE" "#{?#{@pitwall_state},#{@pitwall_state},-}$TAB#{?#{@pitwall_session},#{@pitwall_session},-}$TAB#{window_id}$TAB#{?window_name,#{window_name},-}$TAB#{window_panes}$TAB#{pane_index}$TAB#{session_name}$TAB#{window_index}$TAB#{pid}$TAB#{?#{@pitwall-toast},#{@pitwall-toast},-}$TAB#{?#{@pitwall_quota_at},#{@pitwall_quota_at},0}$TAB#{?#{@pitwall-urgent-after},#{@pitwall-urgent-after},600}$TAB#{?#{@pitwall_since},#{@pitwall_since},0}" 2>/dev/null) || return 1
   case $info in *"$TAB@"*) ;; *) return 1 ;; esac # tmux 3.7 prints empty fields, and exits 0, for a pane that is gone
 }
-pane_info || { TMUX_PANE=$(resolve) && pane_info; } || exit 0
-IFS=$TAB read -r current stored win wname panes pidx sname widx server toast quota_at bell_at urgent_after <<EOF
+if pane_info; then
+  if [ "$harness" = codex ] && [ -n "$sid" ]; then
+    hinted=${info#*"$TAB"}
+    [ "${hinted%%"$TAB"*}" = "$sid" ] || { TMUX_PANE=$(resolve) && pane_info || exit 0; }
+  fi
+else
+  TMUX_PANE=$(resolve) && pane_info || exit 0
+fi
+IFS=$TAB read -r current stored win wname panes pidx sname widx server toast quota_at urgent_after since <<EOF
 $info
 EOF
 [ "$current" = - ] && current=''
 [ "$stored" = - ] && stored=''
+[ "$harness" = codex ] && [ -n "$sid" ] && [ -n "$stored" ] && [ "$stored" != "$sid" ] && [ "$event" != SessionStart ] && exit 0
 [ "$wname" = - ] && wname=''
 [ "$toast" = - ] && toast=''
+# An idle notification can settle a stuck spinner for its own session, never an unread mark or a permission.
+if [ -n "$idle_confirmation" ]; then
+  [ "$current" = working ] && [ -n "$sid" ] && [ "$sid" = "$stored" ] || exit 0
+fi
 fresh=''
 [ -n "$sid" ] && [ "$sid" != "$stored" ] && fresh=1
 # Nothing changed: leave now, unless the event keeps the saved record (once per turn, and at exit).
@@ -158,21 +183,33 @@ case $state in
 esac
 [ "$toast" = off ] && msg=''
 
-set -- set -p -t "$TMUX_PANE" @pitwall_state "$state" ';' \
+if [ -n "$idle_confirmation" ]; then
+  # Check and write in the same tmux command so a newer permission request always wins.
+  case "${TMUX_PANE#%}:$sid:$since" in *[!A-Za-z0-9:_.-]*) exit 0 ;; esac
+  case ${TMUX_PANE#%} in '' | *[!0-9]*) exit 0 ;; esac
+  guard="#{&&:#{==:#{@pitwall_state},working},#{&&:#{==:#{@pitwall_session},$sid},#{==:#{@pitwall_since},$since}}}"
+  applied=$(tmux if-shell -F -t "$TMUX_PANE" "$guard" \
+    "set -p -t $TMUX_PANE @pitwall_state $state; set -p -t $TMUX_PANE @pitwall_since $now; display-message -p yes" 2>/dev/null)
+  [ "$applied" = yes ] || exit 0
+  set --
+else
+  set -- set -p -t "$TMUX_PANE" @pitwall_state "$state" ';' \
   set -p -t "$TMUX_PANE" @pitwall_since "$now" ';' \
   set -p -t "$TMUX_PANE" @pitwall_harness "$harness" ';' \
   set -p -t "$TMUX_PANE" @pitwall_name "$(d=${CWD:-$PWD}; printf '%s' "${d##*/}")" ';' \
   set -pu -t "$TMUX_PANE" @pitwall_urgent ';' \
   set -pu -t "$TMUX_PANE" @pitwall_question ';' \
   set -pu -t "$TMUX_PANE" @pitwall_choices
+fi
 for c in $(tmux list-clients -F '#{client_name}' 2>/dev/null); do
-  set -- "$@" ';' refresh-client -S -t "$c"
+  [ "$#" -eq 0 ] || set -- "$@" ';'
+  set -- "$@" refresh-client -S -t "$c"
   # A toast only for clients that are not already looking at the lane.
   if [ -n "$msg" ]; then
     case " $(echo $viewers) " in *" $c "*) ;; *) set -- "$@" ';' display-message -c "$c" -d 3000 "$msg" ;; esac
   fi
 done
-tmux "$@" >/dev/null 2>&1
+[ "$#" -eq 0 ] || tmux "$@" >/dev/null 2>&1
 
 # Today's ledger, one line per state change (time, pane, session, lane, state): where the day went, for
 # `pitwall stats --today` and the dashboard's Usage view. A new day's file prunes the ones older than two weeks.
@@ -182,10 +219,8 @@ day=$ledger/$(date +%F)
 printf '%s\t%s\t%s\t%s\t%s\n' "$now" "$TMUX_PANE" "${sid:--}" "$name" "$state" >>"$day" 2>/dev/null
 
 bin=$(cd "$(dirname "$0")" && pwd)
-# OpenTimeline, when connected: a lane entering or leaving asking, done or gone becomes a signal, sent in the background.
-if [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/pitwall/opentimeline" ]; then
-  case " $current $state " in *" asking "* | *" done "* | *" gone "*) tmux run-shell -b "'$bin/pitwall-signal' '$TMUX_PANE' '$current' '$state'" >/dev/null 2>&1 ;; esac
-fi
+# Plugins that listen to lane.state get the change, each in the background (OpenTimeline turns it into a signal).
+[ -s "${XDG_STATE_HOME:-$HOME/.local/state}/pitwall/plugins.tsv" ] && "$bin/pitwall" _emit lane.state "$TMUX_PANE" "${current:--}" "$state" >/dev/null 2>&1
 # The spinner animates only while something works; the ticker exits on its own afterwards.
 [ "$state" = working ] && tmux run-shell -b "'$bin/pitwall-tick'" >/dev/null 2>&1
 # A lane that starts asking: its question read off the screen once it is drawn, and a toast that says it.
@@ -193,11 +228,8 @@ fi
 # A lane that starts asking gets one check, ten minutes on (no polling): still asking since then means urgent.
 [ "$state" = asking ] && [ "${urgent_after:-0}" -gt 0 ] &&
   tmux run-shell -b "sleep $urgent_after; '$bin/pitwall' _escalate '$TMUX_PANE' '$now'" >/dev/null 2>&1
-# When a turn ends: usage limits older than ten minutes, and Needs you's count older than two, refresh. No polling.
+# When a turn ends, usage limits older than ten minutes refresh. No polling.
 case $state in
-  done | idle)
-    [ $((now - ${quota_at:-0})) -gt 600 ] && tmux run-shell -b "'$bin/pitwall' quota --refresh" >/dev/null 2>&1
-    [ $((now - ${bell_at:-0})) -gt 120 ] && tmux run-shell -b "'$bin/pitwall' ot bell --refresh" >/dev/null 2>&1
-    ;;
+  done | idle) [ $((now - ${quota_at:-0})) -gt 600 ] && tmux run-shell -b "'$bin/pitwall' quota --refresh" >/dev/null 2>&1 ;;
 esac
 exit 0
