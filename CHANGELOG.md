@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.2](https://github.com/mateonunez/pitwall/compare/v0.2.1...v0.2.2) (2026-11-25)
+
+
+### Features
+
+* add named handoffs and a dashboard plugin system ([#22](https://github.com/mateonunez/pitwall/issues/22)) ([a29b654](https://github.com/mateonunez/pitwall/commit/a29b6542e3cdad12f7103715cd47b451cba88385))
+* workspace recipes with pitwall up, a Usage view with cost, searchable actions, questions and selections, an agent skill and Neovim ([#20](https://github.com/mateonunez/pitwall/issues/20)) ([a0fb90d](https://github.com/mateonunez/pitwall/commit/a0fb90d36bbaaf935f753b261b0568493ad71742))
+
 ## [0.2.1](https://github.com/mateonunez/pitwall/compare/v0.2.0...v0.2.1) (2026-11-21)
 
 
