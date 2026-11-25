@@ -989,4 +989,17 @@ eq "explicitly reopening a saved checkpoint counts as feature use" \
   "$(XDG_STATE_HOME="$RECOVERY_STATE" "$ROOT/bin/pitwall" features | awk '$1 == "handoff-open" { print $4 }')" 3
 $B kill-server
 
+PREFIX_STATE="$RECOVERY_STATE/prefix-check"
+PREFIX_DIR="$PREFIX_STATE/pitwall/handoffs"
+mkdir -p "$PREFIX_DIR"
+printf 'first checkpoint\n' >"$PREFIX_DIR/a1000000000000000000000000000000.md"
+show_prefix() { XDG_STATE_HOME="$PREFIX_STATE" PITWALL_FEATURE_USAGE=off "$ROOT/bin/pitwall" handoff show "$1"; }
+eq "show reads a handoff by its unique prefix" "$(show_prefix a1)" "first checkpoint"
+printf 'second checkpoint\n' >"$PREFIX_DIR/a1111111111111111111111111111111.md"
+short_status=0
+short_output=$(show_prefix a1 2>"$PREFIX_STATE/error") || short_status=$?
+eq "show rejects a shared prefix without reading either checkpoint" "$short_status $short_output" "1 "
+eq "a full ID still selects a checkpoint with a shared prefix" \
+  "$(show_prefix a1111111111111111111111111111111)" "second checkpoint"
+
 exit $fail

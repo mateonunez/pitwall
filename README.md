@@ -230,7 +230,7 @@ A plugin is a folder with a `plugin.toml` and one executable, in any language. p
 | `pitwall ls --workspace NAME --json [--root DIR ...]` | Inspect one exact tmux workspace, optionally limited to directory roots. Scoped rows use pane IDs |
 | `pitwall handoff save @N < note.md` | Save a multiline note with the lane's workspace metadata. Prints a handoff ID |
 | `pitwall handoff save --here < note.md` | Save a handoff from the calling tmux pane |
-| `pitwall handoff list` · `show ID` · `stage ID @N` | Find or inspect a local handoff · draft its reference in an idle lane |
+| `pitwall handoff list` · `show ID` · `stage ID @N` | Find or inspect a local handoff. `show` accepts a unique ID prefix and `stage` takes a full ID |
 | `pitwall answer @N <1\|2\|3>` · `pitwall send @N <text>` | Answer a lane that asks (never one that works) · write to a lane's agent |
 | `pitwall dash` | The dashboard, outside a popup |
 | `pitwall stats [@N]` · `--today` | Model, context and tokens per lane · today's time working and waiting on you |
