@@ -405,7 +405,7 @@ eq "and one whose session no pane holds changes nothing" "$(state s:two)" workin
 # and exits 0). Two Codex in one directory are told apart by the thread name in their title; a lone Claude by
 # its directory. Fake agents: copies of sleep named like the real processes.
 FAKE=$(mktemp -d "$ROOT/.fake.XXXXXX"); ISOLATED="$ISOLATED $FAKE" # not /tmp: CI mounts it noexec
-for a in codex 2.1.327 opencode; do # macOS names a process after its binary, Linux after its argv[0]
+for a in codex 2.1.327 opencode hermes; do # macOS names a process after its binary, Linux after its argv[0]
   if command -v codesign >/dev/null; then cp /bin/sleep "$FAKE/$a" && codesign -f -s - "$FAKE/$a" 2>/dev/null
   else printf '#!/bin/bash\nexec -a %s python3 -c "import time; time.sleep(int(\\"$1\\"))"\n' "$a" >"$FAKE/$a"; chmod +x "$FAKE/$a"; fi
 done; mkdir -p "$FAKE/proj" "$FAKE/home"
@@ -439,6 +439,30 @@ eq "a session that ends while its agent runs on (a resume, a reaped session) is 
 OC=$($T new-window -d -P -F '#{pane_id}' -t s: -n oc -c "$FAKE" "exec $FAKE/opencode 300"); sleep 0.3
 eq "other agents are lanes before any hook, opencode here" "$($T display -p -t "$OC" '#{E:@pitwall-state-fmt}')" idle
 $T kill-pane -t "$CA" \; kill-pane -t "$CB" \; kill-pane -t "$CL" \; kill-pane -t "$OC"
+
+# After /new, the Hermes gateway has neither a pane hint nor a cwd for the new session.
+HA=$($T new-window -d -P -F '#{pane_id}' -t s: -n ha -c "$FAKE/proj" "exec $FAKE/hermes 300")
+HB=$($T new-window -d -P -F '#{pane_id}' -t s: -n hb -c "$FAKE/proj" "exec $FAKE/hermes 300")
+$T select-pane -t "$HA" -T hermes \; select-pane -t "$HB" -T hermes
+mkdir -p "$FAKE/home/terminal-sessions"
+hermes_breadcrumb() {
+  tty=$($T display -p -t "$1" '#{pane_tty}' | tr / -)
+  printf '{"session_id": "%s", "cwd": "%s", "ts": %s}' "$2" "$FAKE/proj" "$(date +%s)" >"$FAKE/home/terminal-sessions/tty$tty"
+}
+hermes_breadcrumb "$HA" hermes-other
+hermes_breadcrumb "$HB" hermes-new
+hermes_breadcrumb "$P1" hermes-new # a stale marker in a plain shell
+hermes_event() {
+  printf '{"session_id": "%s", "cwd": "%s"}' "$1" "$FAKE/home" |
+    TMUX="$SOCK,0,0" TMUX_PANE='' HERMES_HOME="$FAKE/home" "$ROOT/bin/pitwall-hook" "$2" hermes
+}
+hermes_event hermes-new UserPromptSubmit
+eq "a Hermes gateway turn after /new updates the correct terminal" "$($T display -p -t "$HB" '#{@pitwall_session} #{@pitwall_state}')" "hermes-new working"
+eq "the second Hermes lane in the same directory stays idle" "$(state "$HA")" idle
+hermes_event hermes-new Stop
+eq "the Hermes gateway turn clears the spinner on completion" "$(state "$HB")" done
+eq "the Hermes restore record uses the lane's directory" "$(cut -f3 "$XDG_STATE_HOME/pitwall/lanes/hermes-new" 2>/dev/null)" "$(cd "$FAKE/proj" && pwd -P)"
+$T kill-pane -t "$HA" \; kill-pane -t "$HB"
 
 # A window moving out leaves no gap (tmux renumbers only on close), even when moved by hand; records follow.
 $T set -g renumber-windows on \; new-session -d -s r -n ra \; new-window -d -t r:1 -n rb \; new-window -d -t r:2 -n rc
@@ -570,13 +594,20 @@ lanes_shown() { screen | grep -cE '[○◆✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (al
 
 until_screen delta && eq "the dashboard lists every lane" "$(lanes_shown)" 4
 eq "with the search empty, who waits for you comes first" "$(screen | grep -A1 'WAITING FOR YOU' | grep -c '◆ alpha')" 1
+eq "the Lanes footer keeps Git and editor shortcuts in the actions menu" "$(screen | tail -1 | grep -c 'diff nvim git pr')" 0
 $B resize-window -t ui: -x 76 -y 25
 until_screen '^─\{76\}$'
+until_screen 'ctrl-q  create handoff'
 until_screen 'ctrl-z  inbox'
 until_screen 'shift-tab  previous'
-eq "a narrow footer wraps between complete shortcuts" \
-  "$(screen | tail -4 | awk '/ctrl-z  inbox/ { inbox=NR } /shift-tab  previous/ { previous=NR } END { print (inbox && previous && inbox < previous) }')" 1
+eq "a narrow footer shows handoff and Inbox together before secondary shortcuts" \
+  "$(screen | tail -4 | awk '/ctrl-q  create handoff.*ctrl-z  inbox/ { primary=NR } /shift-tab  previous/ { previous=NR } END { print (primary && previous && primary < previous) }')" 1
 $B resize-window -t ui: -x 150 -y 45
+keys Right
+until_screen 'Open the worktree.s diff in lumen'
+until_screen 'Open the folder in nvim'
+until_screen 'Open the branch.s PR'
+esc
 # Inbox isolates actionable lanes. A newer question sorts below the one that has waited longer.
 lane oss:delta asking; lane lab:beta done
 $B set -p -t lab:alpha @pitwall_since "$((now - 1200))" \; set -p -t oss:delta @pitwall_since "$((now - 600))" \; set -p -t lab:beta @pitwall_since "$((now - 1800))"
@@ -971,6 +1002,7 @@ until_screen 'Saved folder is available'
 until_screen 'Keep the fix and run the check'
 until_screen 'ctrl-g  open source link'
 keys C-g
+i=0; until [ -s "$RECOVERY_STATE/opened" ] || [ "$i" -ge 40 ]; do sleep 0.1; i=$((i + 1)); done
 eq "opening a handoff decision uses the saved URL" "$(cat "$RECOVERY_STATE/opened")" 'https://example.test/events/playlist'
 esc
 until_screen '▌.*Spotify playlist context'

@@ -289,7 +289,7 @@ Set them in your tmux config before the plugin line.
 - **An agent is not listed at all.** It may run under a name I do not know: add it to `@pitwall-agents`.
 - **The tabs show little boxes.** Your terminal font has no Nerd Font glyphs: install one, or `set -g @pitwall-tab-caps off`.
 - **No usage limits.** They come from [CodexBar](https://github.com/steipete/CodexBar), on macOS. Without it, the status line simply leaves them out.
-- **Two Hermes sessions in one folder.** I cannot tell them apart yet, so I leave both alone rather than guess.
+- **Two Hermes sessions in one folder.** I use the session associated with each terminal to tell them apart. If the match is ambiguous, the lanes keep their previous state.
 
 ## How it fits together
 
@@ -307,7 +307,7 @@ flowchart LR
 
 The hook runs next to your agents' other hooks on every tool call, so it stays in plain `sh` and makes two tmux calls when nothing changed. Drawing is tmux format strings reading pane options: no process starts per redraw. Each agent session leaves a small record in `~/.local/state/pitwall/lanes/` so restore knows what to bring back.
 
-Some agents run their hooks outside tmux: Codex from a shared daemon, Hermes from its gateway. Then I find the lane by its session, then by its folder (for Hermes, the one stored in its own session database), and for two Codex in one folder by the thread name in their titles. When that is still ambiguous, I change nothing rather than the wrong lane. The words I use are in [CONTEXT.md](CONTEXT.md).
+Codex can run its hooks from a shared daemon and Hermes from its gateway. I look for the session ID on a pane and, for Hermes, in the terminal's session record before falling back to the session folder. Codex thread titles can distinguish agents in the same folder. If the match is still ambiguous, the lanes keep their previous state. The words I use are in [CONTEXT.md](CONTEXT.md).
 
 ## What's next
 

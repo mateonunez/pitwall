@@ -11,39 +11,65 @@ input=$(cat 2>/dev/null) # drain the JSON the harness writes, so it never blocks
 
 command -v tmux >/dev/null 2>&1 || exit 0
 
-json() { # json <key>: a string field of the payload, in plain sh (no process on the hot path)
+json_field() { # read a string field into value, in plain sh
+  value=''
   case $input in *"\"$1\""*) ;; *) return ;; esac
   t=${input#*\"$1\"}
   t=${t#*\"}
-  printf '%s' "${t%%\"*}"
+  value=${t%%\"*}
 }
+json() { json_field "$1"; printf '%s' "$value"; }
 
 TAB=$(printf '\t')
+sid=$(json session_id)
+case $sid in *[!A-Za-z0-9:_.-]*) exit 0 ;; esac
 
-# The session's directory. Hermes runs its turns in its gateway, so a hook's cwd is the gateway's (~/.hermes):
-# the session's own directory is in Hermes's state.db, read-only, for a session id of plain characters.
+# A Hermes hook's cwd is the gateway's. The session's own directory may be in its state.db.
 CWD=$(json cwd)
-if [ "$harness" = hermes ] && command -v sqlite3 >/dev/null 2>&1; then
-  s=$(json session_id)
-  case $s in '' | *[!A-Za-z0-9:_.-]*) ;; *)
-    d=$(sqlite3 -readonly "${HERMES_HOME:-$HOME/.hermes}/state.db" "select cwd from sessions where id = '$s'" 2>/dev/null)
-    [ -n "$d" ] && CWD=$d
-    ;;
-  esac
+hermes_cwd=''
+if [ "$harness" = hermes ]; then
+  hermes_home=${HERMES_HOME:-$HOME/.hermes}
+  if [ -n "$sid" ] && command -v sqlite3 >/dev/null 2>&1; then
+    hermes_cwd=$(sqlite3 -readonly "$hermes_home/state.db" "select cwd from sessions where id = '$sid'" 2>/dev/null)
+    [ -n "$hermes_cwd" ] && CWD=$hermes_cwd
+  fi
 fi
+
+# /new leaves cwd empty in Hermes's database. Its client still records the exact session on its TTY.
+hermes_terminal() {
+  terminals=$(tmux list-panes -a -F "#{pane_id}$TAB#{pane_tty}$TAB#{pane_current_command}$TAB#{?#{@pitwall_harness},#{@pitwall_harness},-}$TAB#{pane_title}" 2>/dev/null) || return
+  while IFS=$TAB read -r pane tty cmd agent title; do
+    case $cmd:$agent:$title in hermes:* | python*:hermes:* | python*:*:hermes | python*:*:hermes\ *) ;; *) continue ;; esac
+    case $tty in
+      /dev/pts/*) key=tty-dev-pts-${tty##*/} ;;
+      /dev/*) key=tty-dev-${tty##*/} ;;
+      *) continue ;;
+    esac
+    input=''
+    IFS= read -r input 2>/dev/null <"$hermes_home/terminal-sessions/$key" || [ -n "$input" ] || continue
+    json_field session_id
+    [ "$value" = "$sid" ] || continue
+    if [ -n "$p" ] && [ "$p" != "$pane" ]; then p=ambiguous; return; fi
+    p=$pane
+  done <<EOF
+$terminals
+EOF
+}
 
 # Resolve an event without a trustworthy TMUX_PANE. Claude sometimes runs hooks without the tmux
 # environment (a long, forked session); Codex runs them in its shared app-server daemon, whose TMUX_PANE is
-# whatever pane first started it; Hermes runs them in its gateway, with no tmux at all. First the pane that
-# already holds this session; else the one agent pane of this harness in the session's directory; two Codex in
-# one directory are told apart by the thread name Codex puts in the pane title. Ambiguous or unknown: no pane,
-# rather than a wrong one.
+# whatever pane first started it; Hermes runs them in its gateway, with no tmux at all. Prefer an exact
+# session match (including Hermes's terminal record), then look in the session's directory.
 resolve() {
   c=$CWD p=''
   if [ -n "$sid" ]; then
     p=$(tmux list-panes -a -f "#{==:#{@pitwall_session},$sid}" -F '#{pane_id}' 2>/dev/null |
       awk '!seen[$0]++ { p=$0; n++ } END { if (n == 1) print p; else if (n > 1) print "ambiguous" }')
     [ "$p" = ambiguous ] && return
+    if [ -z "$p" ] && [ "$harness" = hermes ]; then
+      hermes_terminal
+      [ "$p" = ambiguous ] && return
+    fi
   fi
   if [ -z "$p" ] && [ -n "$c" ]; then
     c=$(cd "$c" 2>/dev/null && pwd -P || printf '%s' "$c") # tmux reports the physical path (/private/var, not /var)
@@ -94,16 +120,14 @@ print(sum(t.get("status") == "running" and t.get("type") in ("subagent", "teamma
   *) exit 0 ;;
 esac
 
-sid=$(json session_id)
-case $sid in *[!A-Za-z0-9:_.-]*) exit 0 ;; esac
-
 # Tab-separated, and no field may be empty: tabs are whitespace to `read`, so an empty one would shift the rest.
 # (A control character would be safer, but tmux before 3.5 prints it escaped.) "-" stands for empty.
 pane_info() {
   [ -n "$TMUX_PANE" ] || return 1
-  info=$(tmux display -p -t "$TMUX_PANE" "#{?#{@pitwall_state},#{@pitwall_state},-}$TAB#{?#{@pitwall_session},#{@pitwall_session},-}$TAB#{window_id}$TAB#{?window_name,#{window_name},-}$TAB#{window_panes}$TAB#{pane_index}$TAB#{session_name}$TAB#{window_index}$TAB#{pid}$TAB#{?#{@pitwall-toast},#{@pitwall-toast},-}$TAB#{?#{@pitwall_quota_at},#{@pitwall_quota_at},0}$TAB#{?#{@pitwall-urgent-after},#{@pitwall-urgent-after},600}$TAB#{?#{@pitwall_since},#{@pitwall_since},0}" 2>/dev/null) || return 1
+  info=$(tmux display -p -t "$TMUX_PANE" "#{?#{@pitwall_state},#{@pitwall_state},-}$TAB#{?#{@pitwall_session},#{@pitwall_session},-}$TAB#{window_id}$TAB#{?window_name,#{window_name},-}$TAB#{window_panes}$TAB#{pane_index}$TAB#{session_name}$TAB#{window_index}$TAB#{pid}$TAB#{?#{@pitwall-toast},#{@pitwall-toast},-}$TAB#{?#{@pitwall_quota_at},#{@pitwall_quota_at},0}$TAB#{?#{@pitwall-urgent-after},#{@pitwall-urgent-after},600}$TAB#{?#{@pitwall_since},#{@pitwall_since},0}$TAB#{?pane_current_path,#{pane_current_path},-}" 2>/dev/null) || return 1
   case $info in *"$TAB@"*) ;; *) return 1 ;; esac # tmux 3.7 prints empty fields, and exits 0, for a pane that is gone
 }
+resolved_pane=''
 if pane_info; then
   if [ "$harness" = codex ] && [ -n "$sid" ]; then
     hinted=${info#*"$TAB"}
@@ -111,10 +135,12 @@ if pane_info; then
   fi
 else
   TMUX_PANE=$(resolve) && pane_info || exit 0
+  resolved_pane=1
 fi
-IFS=$TAB read -r current stored win wname panes pidx sname widx server toast quota_at urgent_after since <<EOF
+IFS=$TAB read -r current stored win wname panes pidx sname widx server toast quota_at urgent_after since pane_cwd <<EOF
 $info
 EOF
+[ "$harness" = hermes ] && [ -n "$resolved_pane" ] && [ -z "$hermes_cwd" ] && [ "$pane_cwd" != - ] && CWD=$pane_cwd
 [ "$current" = - ] && current=''
 [ "$stored" = - ] && stored=''
 [ "$harness" = codex ] && [ -n "$sid" ] && [ -n "$stored" ] && [ "$stored" != "$sid" ] && [ "$event" != SessionStart ] && exit 0
