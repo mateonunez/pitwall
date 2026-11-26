@@ -570,13 +570,20 @@ lanes_shown() { screen | grep -cE '[○◆✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (al
 
 until_screen delta && eq "the dashboard lists every lane" "$(lanes_shown)" 4
 eq "with the search empty, who waits for you comes first" "$(screen | grep -A1 'WAITING FOR YOU' | grep -c '◆ alpha')" 1
+eq "the Lanes footer keeps Git and editor shortcuts in the actions menu" "$(screen | tail -1 | grep -c 'diff nvim git pr')" 0
 $B resize-window -t ui: -x 76 -y 25
 until_screen '^─\{76\}$'
+until_screen 'ctrl-q  create handoff'
 until_screen 'ctrl-z  inbox'
 until_screen 'shift-tab  previous'
-eq "a narrow footer wraps between complete shortcuts" \
-  "$(screen | tail -4 | awk '/ctrl-z  inbox/ { inbox=NR } /shift-tab  previous/ { previous=NR } END { print (inbox && previous && inbox < previous) }')" 1
+eq "a narrow footer shows handoff and Inbox together before secondary shortcuts" \
+  "$(screen | tail -4 | awk '/ctrl-q  create handoff.*ctrl-z  inbox/ { primary=NR } /shift-tab  previous/ { previous=NR } END { print (primary && previous && primary < previous) }')" 1
 $B resize-window -t ui: -x 150 -y 45
+keys Right
+until_screen 'Open the worktree.s diff in lumen'
+until_screen 'Open the folder in nvim'
+until_screen 'Open the branch.s PR'
+esc
 # Inbox isolates actionable lanes. A newer question sorts below the one that has waited longer.
 lane oss:delta asking; lane lab:beta done
 $B set -p -t lab:alpha @pitwall_since "$((now - 1200))" \; set -p -t oss:delta @pitwall_since "$((now - 600))" \; set -p -t lab:beta @pitwall_since "$((now - 1800))"
@@ -971,6 +978,7 @@ until_screen 'Saved folder is available'
 until_screen 'Keep the fix and run the check'
 until_screen 'ctrl-g  open source link'
 keys C-g
+i=0; until [ -s "$RECOVERY_STATE/opened" ] || [ "$i" -ge 40 ]; do sleep 0.1; i=$((i + 1)); done
 eq "opening a handoff decision uses the saved URL" "$(cat "$RECOVERY_STATE/opened")" 'https://example.test/events/playlist'
 esc
 until_screen '▌.*Spotify playlist context'

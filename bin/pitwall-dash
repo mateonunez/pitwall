@@ -1629,7 +1629,6 @@ footer() {
     browse)
       local esc_does
       if [ -n "$query" ]; then esc_does=clear; elif [ "$view" = "p$detail" ] || [ "$view" = restore ] || [ "$view" = inbox ] || [ "$view" = handoffs ]; then esc_does=back; elif ((picked)); then esc_does=unselect; else esc_does=close; fi
-      local other=state; [ "$GROUP" = state ] && other=workspace
       local prev_view='shift-tab:previous' inbox_key='ctrl-z:inbox'
       neighbor_view 1
       if [ "$view" = restore ]; then
@@ -1666,13 +1665,12 @@ footer() {
           chips '⏎:run' "${keys% }:direct" "tab:$nvl" "$prev_view" 'ctrl-n e:down up' "esc:$esc_does"
         fi
       elif [ "${I_kind[cur]-}" = lane ]; then
-        local answer_key='' group_key="ctrl-f:by $other"
-        if [ "${L_state[${I_ref[cur]}]}" = asking ]; then answer_key='1 2 3:answer' group_key=''; fi
+        local answer_key='' read_key='ctrl-n e:down up'
         if [ -z "$query" ]; then
-          chips ${answer_key:+"$answer_key"} '⏎:go' '→:actions' "$inbox_key" "esc:$esc_does" "tab:$nvl" "$prev_view" 'ctrl-q:create handoff' 'space:output' ${group_key:+"$group_key"} 'ctrl-d o g p:diff nvim git pr'
-        else
-          chips '⏎:go' '→:actions' 'ctrl-q:create handoff' "$inbox_key" "esc:$esc_does" "tab:$nvl" "$prev_view" 'ctrl-n e:down up'
+          [ "${L_state[${I_ref[cur]}]}" != asking ] || answer_key='1 2 3:answer'
+          read_key='space:output'
         fi
+        chips ${answer_key:+"$answer_key"} '⏎:go' 'ctrl-q:create handoff' "$inbox_key" '→:actions' "tab:$nvl" "$prev_view" "$read_key" "esc:$esc_does"
       else chips '⏎:go / run' '→:actions' "$inbox_key" "esc:$esc_does" "tab:$nvl" "$prev_view" 'ctrl-n e:down up' 'ctrl+key:act'; fi
       ;;
     actions) chips 'n e:down up' '⏎:run' 'a letter:direct' 'tab:next view' 'shift-tab:previous view' 'esc:back' ;;
