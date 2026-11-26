@@ -37,6 +37,20 @@ def path_for(identifier):
     return ROOT / f"{identifier}.md"
 
 
+def path_for_show(identifier):
+    if IDENTIFIER.fullmatch(identifier):
+        return path_for(identifier)
+    if not re.fullmatch(r"[0-9a-f]{2,31}", identifier):
+        raise ValueError("use a handoff ID or a unique prefix from pitwall handoff list")
+    matches = [path for path in ROOT.glob(f"{identifier}*.md")
+               if IDENTIFIER.fullmatch(path.stem) and path.is_file()]
+    if not matches:
+        raise ValueError("handoff prefix not found; run pitwall handoff list")
+    if len(matches) != 1:
+        raise ValueError("ambiguous handoff prefix; use the full ID from pitwall handoff list")
+    return matches[0]
+
+
 def clean(text):
     return CONTROL.sub("", text.replace("\r\n", "\n")).expandtabs(4)
 
@@ -222,7 +236,7 @@ def main(args):
     elif args == ["list"]:
         list_saved()
     elif args[:1] == ["show"] and len(args) == 2:
-        print(path_for(args[1]).read_text(encoding="utf-8"), end="")
+        print(path_for_show(args[1]).read_text(encoding="utf-8"), end="")
     elif args[:1] == ["preview"] and len(args) == 2:
         preview(args[1])
     elif args[:1] == ["recipient"] and len(args) == 2:
