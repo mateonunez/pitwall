@@ -7,7 +7,7 @@ The words pitwall uses, and only those.
   - `working`: the agent is thinking or running a tool, or a subagent it started in the background still is (a background shell does not count).
   - `asking`: the agent waits for you (permission, a question, a choice).
   - `done`: the agent finished a turn while you were in another window. It stays `done` until you visit the lane: the unread mark.
-  - `idle`: finished and already seen, or never started.
+  - `idle`: finished and already seen, interrupted, or never started.
   - `gone`: the agent exited; the window has a plain shell.
 - **Question**: what an asking lane asks, read off its screen when it starts asking (`Allow pnpm release?`) with its numbered answers; dropped once it moves on.
 - **Urgent**: an `asking` lane that has waited longer than `@pitwall-urgent-after` (ten minutes). Not a state of its own: a mark that clears when the lane moves on.

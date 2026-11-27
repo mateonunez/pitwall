@@ -91,9 +91,11 @@ Any agent with hooks can report. Have each hook run `bin/pitwall-hook <Event> <a
 | `PermissionRequest` | asking |
 | `Stop` | done (or idle, if you are looking at it) |
 | Claude's `Notification` with `idle_prompt` | settles a lane still marked working after its turn |
+| Codex's `Interrupt` | idle |
 | `SessionEnd` | gone |
 
 After a Claude turn, a running subagent or teammate keeps the spinner on. A background monitor or shell can keep running while the lane waits for its next turn.
+If Codex omits the final hook, Pitwall can also settle a working lane when the same turn's terminal title drops its activity indicator. Keep `activity` first in Codex's terminal title to use this fallback.
 
 Restore already knows how to resume grok, opencode and pi. For any other agent, tell it how: `set -g @pitwall-resume-mytool 'mytool --resume {id}'`. To recognise more programs as lanes, change `@pitwall-agents`.
 </details>
