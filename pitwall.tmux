@@ -20,7 +20,27 @@ AGENT=$(opt @pitwall-agents '^(claude|[0-9.]+|codex|gemini|qwen|opencode|grok|pi
 # A lane is a pane running an agent; a window can hold several. A pane's state: the hook's word when there is
 # one, else read from the pane title: Codex writes "[ ! ] Action Required" while it waits for you and prefixes a braille
 # spinner while it works; Claude prefixes a star glyph, ✳ at rest. Hermes runs as python, titled "hermes …".
-tmux set -g @pitwall-state-fmt "#{?#{@pitwall_state},#{@pitwall_state},#{?#{m:*Action Required*,#{pane_title}},asking,#{?#{m/r:^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷],#{pane_title}},working,#{?#{m/r:$AGENT,#{pane_current_command}},#{?#{m/r:^[✶✻✽✢·*],#{pane_title}},working,idle},#{?#{m/r:^hermes( |$),#{pane_title}},idle,}}}}}"
+TITLE_ASKING='#{m/r:^(● )?[[] [!.] []] Action Required( |$),#{pane_title}}'
+TITLE_WORKING='#{m/r:^(● )?[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷],#{pane_title}}'
+tmux set -g @pitwall-state-fmt "#{?#{@pitwall_state},#{@pitwall_state},#{?$TITLE_ASKING,asking,#{?$TITLE_WORKING,working,#{?#{m/r:$AGENT,#{pane_current_command}},#{?#{m/r:^[✶✻✽✢·*],#{pane_title}},working,idle},#{?#{m/r:^hermes( |$),#{pane_title}},idle,}}}}}"
+
+# Codex can finish a turn without Stop. Recover only after seeing a busy title for the same tracked turn.
+CODEX_WORKING='#{&&:#{==:#{pane_current_command},codex},#{&&:#{==:#{@pitwall_harness},codex},#{==:#{@pitwall_state},working}}}'
+TITLE_ACTIVE="#{||:$TITLE_WORKING,$TITLE_ASKING}"
+TITLE_TURN='#{?#{@pitwall_turn},#{@pitwall_turn},#{@pitwall_since}}'
+TITLE_ARMED="#{==:#{@pitwall_codex_title_turn},$TITLE_TURN}"
+tmux set -g @pitwall-codex-title-rest "#{&&:$CODEX_WORKING,#{!:$TITLE_ACTIVE}}"
+tmux set-hook -gw 'pane-title-changed[79]' "
+  if -F '$CODEX_WORKING' {
+    if -F '$TITLE_ACTIVE' {
+      if -F '#{!:$TITLE_ARMED}' { set -pF @pitwall_codex_title_turn '$TITLE_TURN' }
+    } {
+      if -F '$TITLE_ARMED' {
+        set -pu @pitwall_codex_title_turn
+        run-shell -b \"TMUX_PANE='#{pane_id}' '$DIR/bin/pitwall-hook' TitleRest codex #{q:@pitwall_session} #{q:@pitwall_since} #{q:@pitwall_turn} </dev/null\"
+      }
+    }
+  }"
 
 S='#{E:@pitwall-state-fmt}'
 # A window shows its most urgent pane: asking, then done, working, idle, gone.

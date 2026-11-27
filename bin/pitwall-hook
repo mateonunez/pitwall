@@ -23,6 +23,12 @@ json() { json_field "$1"; printf '%s' "$value"; }
 TAB=$(printf '\t')
 sid=$(json session_id)
 case $sid in *[!A-Za-z0-9:_.-]*) exit 0 ;; esac
+turn=''
+if [ "$harness" = codex ]; then
+  json_field turn_id
+  turn=$value
+  case $turn in *[!A-Za-z0-9:_.-]*) exit 0 ;; esac
+fi
 
 # A Hermes hook's cwd is the gateway's. The session's own directory may be in its state.db.
 CWD=$(json cwd)
@@ -90,7 +96,13 @@ resolve() {
 
 idle_confirmation=''
 case $event in
-  SessionStart) state=idle ;;
+  SessionStart)
+    if [ "$harness" = codex ]; then
+      json_field source
+      [ "$value" != compact ] || exit 0
+    fi
+    state=idle
+    ;;
   UserPromptSubmit | PreToolUse | PostToolUse) state=working ;;
   PermissionRequest) state=asking ;;
   Notification)
@@ -116,6 +128,8 @@ print(sum(t.get("status") == "running" and t.get("type") in ("subagent", "teamma
         ;;
     esac
     ;;
+  Interrupt) [ "$harness" = codex ] || exit 0; state=idle ;;
+  TitleRest) [ "$harness" = codex ] || exit 0; state=stop idle_confirmation=1 ;;
   SessionEnd) state=gone ;;
   *) exit 0 ;;
 esac
@@ -124,7 +138,7 @@ esac
 # (A control character would be safer, but tmux before 3.5 prints it escaped.) "-" stands for empty.
 pane_info() {
   [ -n "$TMUX_PANE" ] || return 1
-  info=$(tmux display -p -t "$TMUX_PANE" "#{?#{@pitwall_state},#{@pitwall_state},-}$TAB#{?#{@pitwall_session},#{@pitwall_session},-}$TAB#{window_id}$TAB#{?window_name,#{window_name},-}$TAB#{window_panes}$TAB#{pane_index}$TAB#{session_name}$TAB#{window_index}$TAB#{pid}$TAB#{?#{@pitwall-toast},#{@pitwall-toast},-}$TAB#{?#{@pitwall_quota_at},#{@pitwall_quota_at},0}$TAB#{?#{@pitwall-urgent-after},#{@pitwall-urgent-after},600}$TAB#{?#{@pitwall_since},#{@pitwall_since},0}$TAB#{?pane_current_path,#{pane_current_path},-}" 2>/dev/null) || return 1
+  info=$(tmux display -p -t "$TMUX_PANE" "#{?#{@pitwall_state},#{@pitwall_state},-}$TAB#{?#{@pitwall_session},#{@pitwall_session},-}$TAB#{window_id}$TAB#{?window_name,#{window_name},-}$TAB#{window_panes}$TAB#{pane_index}$TAB#{session_name}$TAB#{window_index}$TAB#{pid}$TAB#{?#{@pitwall-toast},#{@pitwall-toast},-}$TAB#{?#{@pitwall_quota_at},#{@pitwall_quota_at},0}$TAB#{?#{@pitwall-urgent-after},#{@pitwall-urgent-after},600}$TAB#{?#{@pitwall_since},#{@pitwall_since},0}$TAB#{?pane_current_path,#{pane_current_path},-}$TAB#{@pitwall_turn}" 2>/dev/null) || return 1
   case $info in *"$TAB@"*) ;; *) return 1 ;; esac # tmux 3.7 prints empty fields, and exits 0, for a pane that is gone
 }
 resolved_pane=''
@@ -137,7 +151,7 @@ else
   TMUX_PANE=$(resolve) && pane_info || exit 0
   resolved_pane=1
 fi
-IFS=$TAB read -r current stored win wname panes pidx sname widx server toast quota_at urgent_after since pane_cwd <<EOF
+IFS=$TAB read -r current stored win wname panes pidx sname widx server toast quota_at urgent_after since pane_cwd stored_turn <<EOF
 $info
 EOF
 [ "$harness" = hermes ] && [ -n "$resolved_pane" ] && [ -z "$hermes_cwd" ] && [ "$pane_cwd" != - ] && CWD=$pane_cwd
@@ -146,14 +160,33 @@ EOF
 [ "$harness" = codex ] && [ -n "$sid" ] && [ -n "$stored" ] && [ "$stored" != "$sid" ] && [ "$event" != SessionStart ] && exit 0
 [ "$wname" = - ] && wname=''
 [ "$toast" = - ] && toast=''
-# An idle notification can settle a stuck spinner for its own session, never an unread mark or a permission.
+# A quiet title or idle notification may settle a spinner, never an unread mark or an approval.
 if [ -n "$idle_confirmation" ]; then
-  [ "$current" = working ] && [ -n "$sid" ] && [ "$sid" = "$stored" ] || exit 0
+  [ "$current" = working ] && [ -n "$stored" ] || exit 0
+  if [ "$event" = TitleRest ]; then
+    [ "$stored" = "${3:-}" ] && [ "$since" = "${4:-}" ] && [ "$stored_turn" = "${5:-}" ] || exit 0
+  else
+    [ "$sid" = "$stored" ] || exit 0
+  fi
 fi
 fresh=''
 [ -n "$sid" ] && [ "$sid" != "$stored" ] && fresh=1
+
+# A closed turn keeps its id so late tool events cannot put the spinner back.
+next_turn=$stored_turn
+if [ -n "$fresh" ]; then
+  next_turn=$turn
+elif [ -n "$turn" ]; then
+  case $event:$stored_turn in
+    Interrupt:"!$turn") ;; # The title may have already settled this interrupt.
+    *:"!$turn") exit 0 ;;
+    UserPromptSubmit:* | *: | *:"$turn") next_turn=$turn ;;
+    *) exit 0 ;;
+  esac
+fi
+case $event in Interrupt | TitleRest) [ -z "$next_turn" ] || next_turn="!${next_turn#!}" ;; esac
 # Nothing changed: leave now, unless the event keeps the saved record (once per turn, and at exit).
-case $event in Stop | SessionEnd) ;; *) [ "$current" = "$state" ] && [ -z "$fresh" ] && exit 0 ;; esac
+case $event in Stop | Interrupt | SessionEnd) ;; *) [ "$current:$stored_turn" = "$state:$next_turn" ] && [ -z "$fresh" ] && exit 0 ;; esac
 
 now=$(date +%s)
 name=$wname
@@ -172,14 +205,15 @@ record() {
 forget() { rm -f "${XDG_STATE_HOME:-$HOME/.local/state}/pitwall/lanes/$sid" 2>/dev/null; }
 
 if [ -n "$fresh" ]; then
-  tmux set -p -t "$TMUX_PANE" @pitwall_session "$sid" ';' set -p -t "$TMUX_PANE" @pitwall_transcript "$(json transcript_path)" >/dev/null 2>&1
+  tmux set -p -t "$TMUX_PANE" @pitwall_session "$sid" ';' set -p -t "$TMUX_PANE" @pitwall_transcript "$(json transcript_path)" ';' set -p -t "$TMUX_PANE" @pitwall_turn "$next_turn" >/dev/null 2>&1
+  stored_turn=$next_turn
   record
   # a new session in a workspace saved as a recipe: the recipe follows it
   [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/pitwall/up/$sname.toml" ] &&
     tmux run-shell -b "'$(cd "$(dirname "$0")" && pwd)/pitwall' _autosave '$sname'" >/dev/null 2>&1
 fi
 case $event in
-  Stop) record ;; # once per turn: keeps the window and pane position current
+  Stop | Interrupt) [ -n "$fresh" ] || record ;; # once per turn: keeps the window and pane position current
   SessionEnd)
     # A deliberate exit is not restored; anything else (the server died, a signal) keeps the record.
     case $(json reason) in clear | logout | prompt_input_exit) forget ;; esac
@@ -193,13 +227,28 @@ if [ "$event" = SessionEnd ] && [ -z "${PITWALL_GONE_CHECKED:-}" ]; then
   tmux run-shell -b "sleep 2; case \$(tmux display -p -t '$TMUX_PANE' '##{pane_current_command}' 2>/dev/null) in zsh | -zsh | bash | -bash | fish | sh | -sh | dash | login) printf '{\"session_id\":\"$sid\"}' | PITWALL_GONE_CHECKED=1 TMUX_PANE='$TMUX_PANE' '$bin/pitwall-hook' SessionEnd '$harness' ;; esac" >/dev/null 2>&1
   exit 0
 fi
-[ "$current" = "$state" ] && exit 0
-
 viewers=$(tmux list-clients -f "#{==:#{window_id},$win}" -F '#{client_name}' 2>/dev/null)
 if [ "$state" = stop ]; then
   # Finished while you look at it: idle. Finished while you are elsewhere: done, the unread mark.
   if [ -n "$viewers" ]; then state=idle; else state=done; fi
-  [ "$current" = "$state" ] && exit 0
+fi
+
+guard=''
+if [ -n "$turn$idle_confirmation" ] || [ "$event" = Interrupt ]; then
+  # The snapshot can change while this hook runs. Compare and write in the tmux server.
+  case ${TMUX_PANE#%} in '' | *[!0-9]*) exit 0 ;; esac
+  case $sid:$since:${stored_turn#!}:${next_turn#!} in *[!A-Za-z0-9:_.-]*) exit 0 ;; esac
+  guard="#{&&:#{==:#{@pitwall_session},$sid},#{==:#{@pitwall_turn},$stored_turn}}"
+  if [ -n "$idle_confirmation" ]; then
+    guard="#{&&:$guard,#{&&:#{==:#{@pitwall_state},working},#{==:#{@pitwall_since},$since}}}"
+    [ "$event" != TitleRest ] || guard="#{&&:$guard,#{E:@pitwall-codex-title-rest}}"
+  fi
+fi
+if [ "$current" = "$state" ]; then
+  if [ "$next_turn" != "$stored_turn" ]; then
+    tmux if -F -t "$TMUX_PANE" "$guard" "set -p -t $TMUX_PANE @pitwall_turn '$next_turn'" 2>/dev/null
+  fi
+  exit 0
 fi
 
 case $state in
@@ -209,15 +258,12 @@ case $state in
 esac
 [ "$toast" = off ] && msg=''
 
-if [ -n "$idle_confirmation" ]; then
-  # Check and write in the same tmux command so a newer permission request always wins.
-  case "${TMUX_PANE#%}:$sid:$since" in *[!A-Za-z0-9:_.-]*) exit 0 ;; esac
-  case ${TMUX_PANE#%} in '' | *[!0-9]*) exit 0 ;; esac
-  guard="#{&&:#{==:#{@pitwall_state},working},#{&&:#{==:#{@pitwall_session},$sid},#{==:#{@pitwall_since},$since}}}"
+if [ -n "$guard" ]; then
   applied=$(tmux if-shell -F -t "$TMUX_PANE" "$guard" \
-    "set -p -t $TMUX_PANE @pitwall_state $state; set -p -t $TMUX_PANE @pitwall_since $now; display-message -p yes" 2>/dev/null)
+    "set -p -t $TMUX_PANE @pitwall_state $state; set -p -t $TMUX_PANE @pitwall_since $now; set -p -t $TMUX_PANE @pitwall_turn '$next_turn'; set -p -t $TMUX_PANE @pitwall_harness $harness; set -pu -t $TMUX_PANE @pitwall_urgent; set -pu -t $TMUX_PANE @pitwall_question; set -pu -t $TMUX_PANE @pitwall_choices; display-message -p yes" 2>/dev/null)
   [ "$applied" = yes ] || exit 0
   set --
+  [ "$event" = TitleRest ] || set -- set -p -t "$TMUX_PANE" @pitwall_name "$(d=${CWD:-$PWD}; printf '%s' "${d##*/}")"
 else
   set -- set -p -t "$TMUX_PANE" @pitwall_state "$state" ';' \
   set -p -t "$TMUX_PANE" @pitwall_since "$now" ';' \

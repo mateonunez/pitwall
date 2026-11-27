@@ -432,6 +432,41 @@ hook "$CA" Stop '{"session_id":"cx-b"}'
 eq "a daemon's live but wrong pane cannot take another Codex session" "$($T display -p -t "$CA" '#{@pitwall_session} #{@pitwall_state}') $($T display -p -t "$CB" '#{@pitwall_session} #{@pitwall_state}')" "cx-a working cx-b done"
 hook "$CA" Stop '{"session_id":"unmatched"}'
 eq "an unmatched Stop leaves the live pane alone" "$($T display -p -t "$CA" '#{@pitwall_session} #{@pitwall_state}')" "cx-a working"
+
+codex_turn() { hook "$CA" "$1" "{\"session_id\":\"cx-a\",\"turn_id\":\"$2\"}"; }
+codex_turn UserPromptSubmit first
+codex_turn PermissionRequest first
+codex_turn Interrupt first
+eq "interrupt clears a Codex spinner or pending approval without Stop" "$(state "$CA")" idle
+codex_turn PostToolUse first
+eq "a late tool result cannot revive an interrupted Codex turn" "$(state "$CA")" idle
+codex_turn UserPromptSubmit second
+codex_turn UserPromptSubmit third
+codex_turn Stop second
+codex_turn Interrupt first
+eq "old terminal events leave the current Codex turn working" "$(state "$CA")" working
+hook "$CA" SessionStart '{"session_id":"cx-a","source":"compact"}'
+eq "Codex compaction does not reset the current turn to idle" "$(state "$CA")" working
+
+codex_turn UserPromptSubmit title-turn
+CODEX_TTY=$($T display -p -t "$CA" '#{pane_tty}')
+codex_title() { printf '\033]2;%s\007' "$1" > "$CODEX_TTY"; }
+codex_title '⠙ Ship the docs | proj'
+for _ in $(seq 1 15); do [ "$($T display -p -t "$CA" '#{@pitwall_codex_title_turn}')" = title-turn ] && break; sleep 0.1; done
+codex_title 'Ship the docs | proj'
+for _ in $(seq 1 15); do [ "$(state "$CA")" = done ] && break; sleep 0.1; done
+eq "Codex title returning to rest settles a turn that sent no terminal hook" "$(state "$CA")" done
+codex_turn PostToolUse title-turn
+eq "a late tool result cannot revive a turn settled by the title" "$(state "$CA")" done
+codex_turn UserPromptSubmit fourth
+codex_title 'Ship more docs | proj'
+eq "a plain title alone cannot settle an active Codex turn" "$(state "$CA")" working
+codex_title '⠙ Ship more docs | proj'
+for _ in $(seq 1 15); do [ "$($T display -p -t "$CA" '#{@pitwall_codex_title_turn}')" = fourth ] && break; sleep 0.1; done
+codex_turn PermissionRequest fourth
+codex_title 'Ship more docs | proj'
+eq "title recovery leaves a pending approval alone" "$(state "$CA")" asking
+
 echo "{\"session_id\":\"cl-1\",\"cwd\":\"$FAKE\"}" | TMUX="$SOCK,0,0" TMUX_PANE='' "$ROOT/bin/pitwall-hook" UserPromptSubmit claude
 eq "a Claude hook without tmux finds the one Claude in its directory" "$($T display -p -t "$CL" '#{@pitwall_state} #{@pitwall_name}')" "working $(basename "$FAKE")"
 echo '{"session_id":"cl-1","reason":"other"}' | TMUX="$SOCK,0,0" TMUX_PANE="$CL" "$ROOT/bin/pitwall-hook" SessionEnd claude; sleep 2.6
@@ -495,6 +530,7 @@ eq "and tmux its own first line" "$($T show -gv 'status-format[0]' | grep -c pit
 H=$(mktemp -d); ISOLATED="$ISOLATED $H"; mkdir -p "$H/.claude/skills" "$H/.codex" "$H/.hermes"
 printf '# my notes\nmodel: x\n' >"$H/.hermes/config.yaml"
 HOME=$H HERMES_HOME= "$ROOT/bin/pitwall" install --write >/dev/null
+eq "install wires Codex interruption and session shutdown hooks" "$(python3 -c 'import json, sys; print({"Interrupt", "SessionEnd"} <= json.load(open(sys.argv[1]))["hooks"].keys())' "$H/.codex/hooks.json")" True
 eq "install links the agents' skill where an agent keeps skills" "$(readlink "$H/.claude/skills/pitwall" 2>/dev/null | sed 's|.*/skills/|skills/|')" skills/pitwall
 eq "install appends seven Hermes hooks, tool calls included" "$(grep -c 'pitwall-hook .* hermes$' "$H/.hermes/config.yaml")" 7
 eq "and keeps what was there, comments too" "$(head -2 "$H/.hermes/config.yaml" | tr '\n' ' ')" "# my notes model: x "

@@ -801,7 +801,7 @@ cmd__done() {
   esac
 }
 
-EVENTS='SessionStart UserPromptSubmit PreToolUse PostToolUse PermissionRequest Notification Stop SessionEnd'
+EVENTS='SessionStart UserPromptSubmit PreToolUse PostToolUse PermissionRequest Notification Stop Interrupt SessionEnd'
 
 cmd_install() {
   # Same JSON shape for both harnesses: { "hooks": { Event: [ { "hooks": [ {type, command} ] } ] } }.
@@ -819,8 +819,8 @@ if os.path.exists(path):
 hooks = data.setdefault("hooks", {})
 added = []
 for event in events.split():
-    if harness == "codex" and event in ("Notification", "SessionEnd"):
-        continue  # Codex has no such events; PermissionRequest and Stop cover it
+    if (harness, event) in (("codex", "Notification"), ("claude", "Interrupt")):
+        continue
     command = f"'{hook}' {event} {harness}"
     groups = hooks.setdefault(event, [])
     if any("pitwall-hook" in h.get("command", "") for g in groups for h in g.get("hooks", [])):
