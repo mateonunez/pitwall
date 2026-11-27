@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.3](https://github.com/mateonunez/pitwall/compare/v0.2.2...v0.2.3) (2026-11-27)
+
+
+### Bug Fixes
+
+* clear stale Codex lane states ([62bbc54](https://github.com/mateonunez/pitwall/commit/62bbc54834929bae294314329e934ce10d43792c))
+* restore Hermes lane status and streamline handoffs ([301b3c7](https://github.com/mateonunez/pitwall/commit/301b3c7e0cc6ec25a44fbc52aa5bc857893130d5))
+* track automatic Codex goal turns ([fbf03b3](https://github.com/mateonunez/pitwall/commit/fbf03b3456a683e6b94799868f25178d0f991e3f))
+
 ## [0.2.2](https://github.com/mateonunez/pitwall/compare/v0.2.1...v0.2.2) (2026-11-25)
 
 
