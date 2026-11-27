@@ -172,6 +172,19 @@ fi
 fresh=''
 [ -n "$sid" ] && [ "$sid" != "$stored" ] && fresh=1
 
+turn_millis() {
+  case $1 in
+    *[!0123456789abcdefABCDEF-]*) return 1 ;;
+    ????????-????-7???-[89aAbB]???-????????????) ;;
+    *) return 1 ;;
+  esac
+  suffix=${1#*-}
+  hex=${1%%-*}${suffix%%-*}
+  case $hex in *[!0123456789abcdefABCDEF]*) return 1 ;; esac
+  [ "${#hex}" -eq 12 ] || return 1
+  millis=$((0x$hex))
+}
+
 # A closed turn keeps its id so late tool events cannot put the spinner back.
 next_turn=$stored_turn
 if [ -n "$fresh" ]; then
@@ -181,7 +194,13 @@ elif [ -n "$turn" ]; then
     Interrupt:"!$turn") ;; # The title may have already settled this interrupt.
     *:"!$turn") exit 0 ;;
     UserPromptSubmit:* | *: | *:"$turn") next_turn=$turn ;;
-    *) exit 0 ;;
+    *)
+      # shortcut: automatic continuations rely on UUIDv7 timestamps until Codex exposes a turn-start hook.
+      turn_millis "${stored_turn#!}" || exit 0
+      previous_millis=$millis
+      turn_millis "$turn" && [ "$millis" -gt "$previous_millis" ] || exit 0
+      next_turn=$turn
+      ;;
   esac
 fi
 case $event in Interrupt | TitleRest) [ -z "$next_turn" ] || next_turn="!${next_turn#!}" ;; esac

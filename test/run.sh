@@ -467,6 +467,17 @@ codex_turn PermissionRequest fourth
 codex_title 'Ship more docs | proj'
 eq "title recovery leaves a pending approval alone" "$(state "$CA")" asking
 
+old_turn=018d0000-0001-7000-8000-000000000000
+next_turn=018d0000-0002-7000-8000-000000000000
+codex_turn UserPromptSubmit "$old_turn"
+codex_turn Interrupt "$old_turn"
+codex_turn PreToolUse "$next_turn"
+eq "a Codex goal can start a newer turn without UserPromptSubmit" "$($T display -p -t "$CA" '#{E:@pitwall-state-fmt} #{@pitwall_turn}')" "working $next_turn"
+codex_turn Stop "$old_turn"
+eq "an older Codex Stop cannot settle a goal continuation" "$(state "$CA")" working
+codex_turn Stop "$next_turn"
+eq "the goal continuation finishes normally" "$(state "$CA")" done
+
 echo "{\"session_id\":\"cl-1\",\"cwd\":\"$FAKE\"}" | TMUX="$SOCK,0,0" TMUX_PANE='' "$ROOT/bin/pitwall-hook" UserPromptSubmit claude
 eq "a Claude hook without tmux finds the one Claude in its directory" "$($T display -p -t "$CL" '#{@pitwall_state} #{@pitwall_name}')" "working $(basename "$FAKE")"
 echo '{"session_id":"cl-1","reason":"other"}' | TMUX="$SOCK,0,0" TMUX_PANE="$CL" "$ROOT/bin/pitwall-hook" SessionEnd claude; sleep 2.6
