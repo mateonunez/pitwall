@@ -138,7 +138,7 @@ esac
 # (A control character would be safer, but tmux before 3.5 prints it escaped.) "-" stands for empty.
 pane_info() {
   [ -n "$TMUX_PANE" ] || return 1
-  info=$(tmux display -p -t "$TMUX_PANE" "#{?#{@pitwall_state},#{@pitwall_state},-}$TAB#{?#{@pitwall_session},#{@pitwall_session},-}$TAB#{window_id}$TAB#{?window_name,#{window_name},-}$TAB#{window_panes}$TAB#{pane_index}$TAB#{session_name}$TAB#{window_index}$TAB#{pid}$TAB#{?#{@pitwall-toast},#{@pitwall-toast},-}$TAB#{?#{@pitwall_quota_at},#{@pitwall_quota_at},0}$TAB#{?#{@pitwall-urgent-after},#{@pitwall-urgent-after},600}$TAB#{?#{@pitwall_since},#{@pitwall_since},0}$TAB#{?pane_current_path,#{pane_current_path},-}$TAB#{@pitwall_turn}" 2>/dev/null) || return 1
+  info=$(tmux display -p -t "$TMUX_PANE" "#{?#{@pitwall_state},#{@pitwall_state},-}$TAB#{?#{@pitwall_session},#{@pitwall_session},-}$TAB#{window_id}$TAB#{?window_name,#{window_name},-}$TAB#{window_panes}$TAB#{pane_index}$TAB#{?#{@pitwall_managed_origin},#{@pitwall_managed_origin},#{session_name}}$TAB#{?#{@pitwall_managed_origin},#{@pitwall_managed_index},#{window_index}}$TAB#{pid}$TAB#{?#{@pitwall-toast},#{@pitwall-toast},-}$TAB#{?#{@pitwall_quota_at},#{@pitwall_quota_at},0}$TAB#{?#{@pitwall-urgent-after},#{@pitwall-urgent-after},600}$TAB#{?#{@pitwall_since},#{@pitwall_since},0}$TAB#{?pane_current_path,#{pane_current_path},-}$TAB#{@pitwall_turn}" 2>/dev/null) || return 1
   case $info in *"$TAB@"*) ;; *) return 1 ;; esac # tmux 3.7 prints empty fields, and exits 0, for a pane that is gone
 }
 resolved_pane=''
@@ -246,7 +246,7 @@ if [ "$event" = SessionEnd ] && [ -z "${PITWALL_GONE_CHECKED:-}" ]; then
   tmux run-shell -b "sleep 2; case \$(tmux display -p -t '$TMUX_PANE' '##{pane_current_command}' 2>/dev/null) in zsh | -zsh | bash | -bash | fish | sh | -sh | dash | login) printf '{\"session_id\":\"$sid\"}' | PITWALL_GONE_CHECKED=1 TMUX_PANE='$TMUX_PANE' '$bin/pitwall-hook' SessionEnd '$harness' ;; esac" >/dev/null 2>&1
   exit 0
 fi
-viewers=$(tmux list-clients -f "#{==:#{window_id},$win}" -F '#{client_name}' 2>/dev/null)
+viewers=$(tmux list-clients -F "#{?#{==:#{window_id},$win},#{client_name},}" 2>/dev/null)
 if [ "$state" = stop ]; then
   # Finished while you look at it: idle. Finished while you are elsewhere: done, the unread mark.
   if [ -n "$viewers" ]; then state=idle; else state=done; fi
@@ -263,7 +263,14 @@ if [ -n "$turn$idle_confirmation" ] || [ "$event" = Interrupt ]; then
     [ "$event" != TitleRest ] || guard="#{&&:$guard,#{E:@pitwall-codex-title-rest}}"
   fi
 fi
+route_tab() {
+  bin=${bin:-$(cd "$(dirname "$0")" && pwd)}
+  tmux if-shell -F -t "$TMUX_PANE" '#{==:#{@pitwall_automanaged},on}' \
+    "run-shell -b \"'$bin/pitwall' _route '$win'\"" >/dev/null 2>&1
+}
+
 if [ "$current" = "$state" ]; then
+  [ -z "$fresh" ] || route_tab
   if [ "$next_turn" != "$stored_turn" ]; then
     tmux if -F -t "$TMUX_PANE" "$guard" "set -p -t $TMUX_PANE @pitwall_turn '$next_turn'" 2>/dev/null
   fi
@@ -297,7 +304,7 @@ for c in $(tmux list-clients -F '#{client_name}' 2>/dev/null); do
   set -- "$@" refresh-client -S -t "$c"
   # A toast only for clients that are not already looking at the lane.
   if [ -n "$msg" ]; then
-    case " $(echo $viewers) " in *" $c "*) ;; *) set -- "$@" ';' display-message -c "$c" -d 3000 "$msg" ;; esac
+    case " $(echo $viewers) " in *" $c "*) ;; *) set -- "$@" ';' display-message -c "$c" "$msg" ;; esac
   fi
 done
 [ "$#" -eq 0 ] || tmux "$@" >/dev/null 2>&1
@@ -312,6 +319,8 @@ printf '%s\t%s\t%s\t%s\t%s\n' "$now" "$TMUX_PANE" "${sid:--}" "$name" "$state" >
 bin=$(cd "$(dirname "$0")" && pwd)
 # Plugins that listen to lane.state get the change, each in the background (OpenTimeline turns it into a signal).
 [ -s "${XDG_STATE_HOME:-$HOME/.local/state}/pitwall/plugins.tsv" ] && "$bin/pitwall" _emit lane.state "$TMUX_PANE" "${current:--}" "$state" >/dev/null 2>&1
+# Automanaged checks only after a state change and routes in the background.
+route_tab
 # The spinner animates only while something works; the ticker exits on its own afterwards.
 [ "$state" = working ] && tmux run-shell -b "'$bin/pitwall-tick'" >/dev/null 2>&1
 # A lane that starts asking: its question read off the screen once it is drawn, and a toast that says it.

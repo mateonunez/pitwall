@@ -3,6 +3,10 @@
 # Safe to run again: every change is idempotent. Nothing here starts a process per redraw.
 
 DIR=$(cd "$(dirname "$0")" && pwd)
+. "$DIR/lib/pitwall-settings.sh"
+. "$DIR/lib/pitwall-preview.sh"
+TAB=$(printf '\t')
+"$DIR/bin/pitwall" settings _load
 
 opt() { v=$(tmux show -gqv "$1"); printf %s "${v:-$2}"; }
 
@@ -16,24 +20,26 @@ KEY_DASH=$(opt @pitwall-key-dashboard 'Space')
 # The processes that make a pane a lane even before (or without) a hook. Claude Code shows up as its version,
 # e.g. 2.1.323; Hermes runs as python, so it is told by its title instead (below).
 AGENT=$(opt @pitwall-agents '^(claude|[0-9.]+|codex|gemini|qwen|opencode|grok|pi|droid|amp|cursor-agent|copilot|crush|goose|aider|kiro-cli)$')
+tmux set -g @pitwall_agent_regex "$AGENT"
+AGENT='#{@pitwall_agent_regex}'
 
 # A lane is a pane running an agent; a window can hold several. A pane's state: the hook's word when there is
 # one, else read from the pane title: Codex writes "[ ! ] Action Required" while it waits for you and prefixes a braille
 # spinner while it works; Claude prefixes a star glyph, ✳ at rest. Hermes runs as python, titled "hermes …".
 TITLE_ASKING='#{m/r:^(● )?[[] [!.] []] Action Required( |$),#{pane_title}}'
 TITLE_WORKING='#{m/r:^(● )?[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷],#{pane_title}}'
-tmux set -g @pitwall-state-fmt "#{?#{@pitwall_state},#{@pitwall_state},#{?$TITLE_ASKING,asking,#{?$TITLE_WORKING,working,#{?#{m/r:$AGENT,#{pane_current_command}},#{?#{m/r:^[✶✻✽✢·*],#{pane_title}},working,idle},#{?#{m/r:^hermes( |$),#{pane_title}},idle,}}}}}"
+tmux set -g @pitwall-state-fmt "#{?#{@pitwall_state},#{@pitwall_state},#{?$TITLE_ASKING,asking,#{?$TITLE_WORKING,working,#{?#{m/r:$AGENT,#{pane_current_command}},#{?#{m/r:^[✶✻✽✢·*],#{pane_title}},working,idle},#{?$HERMES_TITLE,idle,}}}}}"
 
 # Codex can finish a turn without Stop. Recover only after seeing a busy title for the same tracked turn.
 CODEX_WORKING='#{&&:#{==:#{pane_current_command},codex},#{&&:#{==:#{@pitwall_harness},codex},#{==:#{@pitwall_state},working}}}'
 TITLE_ACTIVE="#{||:$TITLE_WORKING,$TITLE_ASKING}"
 TITLE_TURN='#{?#{@pitwall_turn},#{@pitwall_turn},#{@pitwall_since}}'
 TITLE_ARMED="#{==:#{@pitwall_codex_title_turn},$TITLE_TURN}"
-tmux set -g @pitwall-codex-title-rest "#{&&:$CODEX_WORKING,#{!:$TITLE_ACTIVE}}"
+tmux set -g @pitwall-codex-title-rest "#{&&:$CODEX_WORKING,#{?$TITLE_ACTIVE,0,1}}"
 tmux set-hook -gw 'pane-title-changed[79]' "
   if -F '$CODEX_WORKING' {
     if -F '$TITLE_ACTIVE' {
-      if -F '#{!:$TITLE_ARMED}' { set -pF @pitwall_codex_title_turn '$TITLE_TURN' }
+      if -F '#{?$TITLE_ARMED,0,1}' { set -pF @pitwall_codex_title_turn '$TITLE_TURN' }
     } {
       if -F '$TITLE_ARMED' {
         set -pu @pitwall_codex_title_turn
@@ -46,13 +52,52 @@ S='#{E:@pitwall-state-fmt}'
 # A window shows its most urgent pane: asking, then done, working, idle, gone.
 tmux set -g @pitwall-window-fmt "#{?#{m:*asking*,#{P:$S }},asking,#{?#{m:*done*,#{P:$S }},done,#{?#{m:*working*,#{P:$S }},working,#{?#{m:*idle*,#{P:$S }},idle,#{?#{m:*gone*,#{P:$S }},gone,}}}}}"
 W='#{E:@pitwall-window-fmt}'
-glyph() { # $1 asking style, $2 done style, $3 gone style
-  printf '%s' "#{?#{==:$W,asking},$1◆ ,#{?#{==:$W,done},$2✓ ,#{?#{==:$W,working},#{?#{@pitwall_spin},#{@pitwall_spin},⠙} ,#{?#{==:$W,idle},○ ,#{?#{==:$W,gone},$3✗ ,}}}}}"
+# Resolve each managed workspace colour once. Text uses the higher-contrast of black and white.
+workspace_colours() {
+  bg_format='' fg_format=''
+  for bucket in $MANAGED_BUCKETS; do
+    settings_spec "color-$bucket" || continue
+    value=$(opt "@pitwall-color-$bucket" "$default")
+    settings_valid || value=$default
+    hex=${value#\#}; red=${hex%????}; green=${hex#??}; green=${green%??}; blue=${hex#????}
+    fg=$(awk -v r="$((0x$red))" -v g="$((0x$green))" -v b="$((0x$blue))" '
+      function linear(v) { v /= 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ^ 2.4 }
+      BEGIN { print (.2126 * linear(r) + .7152 * linear(g) + .0722 * linear(b) > .179 ? "#000000" : "#ffffff") }'
+    )
+    is_bucket="#{==:#{@pitwall_managed_bucket},$bucket}"
+    bg_format="#{?$is_bucket,$value,$bg_format}"
+    fg_format="#{?$is_bucket,$fg,$fg_format}"
+    if [ "$bucket" = draft ]; then
+      tmux set -g @pitwall_draft_bg "$value" \; set -g @pitwall_draft_fg "$fg" \; \
+        set -g @pitwall-draft-chip "#[push-default]#[bg=$value fg=$fg bold] Draft #[default]#[pop-default] "
+    fi
+  done
+}
+workspace_colours
+AUTO_ON='#{==:#{@pitwall_automanaged},on}'
+WORKING_GROUP="#{&&:$AUTO_ON,#{==:#{@pitwall_managed_bucket},working}}"
+TMUX_VERSION=$(tmux display -p '#{version}')
+groups='' workspace_order=''
+for bucket in $MANAGED_BUCKETS; do
+  show_group="#{==:#{@pitwall_managed_bucket},$bucket}"
+  [ "$bucket" != needs-you ] || show_group="#{&&:$show_group,$WORKSPACE_WINDOWS}"
+  groups="$groups#{S:#{?$show_group,#{E:@pitwall-tabs-session},}}"
+  workspace_order="$workspace_order#{S:#{?$show_group,#{session_id} ,}}"
+done
+not_managed='#{?#{m/r:^(needs-you|working|draft|review|idle)$,#{@pitwall_managed_bucket}},0,1}'
+tmux set -g @pitwall-workspace-order "$workspace_order#{S:#{?$not_managed,#{session_id} ,}}"
+HAS_DRAFT="#{&&:$AUTO_ON,#{&&:#{==:$W,idle},$DRAFT_TABS}}"
+DRAFT_IN_GROUP="#{&&:$HAS_DRAFT,#{&&:#{==:#{@pitwall-layout},tabs},#{==:#{@pitwall_managed_bucket},draft}}}"
+DRAFT_LABEL="#{?$DRAFT_IN_GROUP,0,$HAS_DRAFT}"
+DRAFT_CHIP="#{?$DRAFT_LABEL,#{E:@pitwall-draft-chip},}"
+glyph() { # $1 asking style, $2 done style, $3 gone style, $4 draft label
+  printf '%s' "#{?$DRAFT_IN_GROUP,,#{?#{==:$W,asking},$1◆ ,#{?#{==:$W,done},$2✓ ,#{?#{==:$W,working},#{?#{@pitwall_spin},#{@pitwall_spin},⠙} ,#{?#{==:$W,idle},○ ,#{?#{==:$W,gone},$3✗ ,}}}}}}${4:-$DRAFT_CHIP}"
 }
 # The colour also carries to the window name that follows; the current window keeps its own style.
 # A lane asking for longer than @pitwall-urgent-after turns its window's ◆ red. (Built in single quotes: the shell
 # would brace-expand this format inside a nested substitution.)
 ASKING='#{?#{m:*1*,#{P:#{@pitwall_urgent} }},#[fg='"$GONE"' bold],#[fg='"$ASK"' bold]}'
+URGENT='#{?#{m:*1*,#{P:#{@pitwall_urgent} }},#[fg='"$GONE"' bold],}'
 tmux set -g @pitwall-glyph "$(glyph "$ASKING" "#[fg=$DONE bold]" "#[fg=$GONE]")"
 tmux set -g @pitwall-glyph-plain "$(glyph '' '' '')"
 # Right side: other workspaces with a lane that needs you, this workspace's lanes that do, lanes waiting to be
@@ -88,18 +133,44 @@ if [ "$(opt @pitwall-layout inline)" = tabs ]; then
   if [ "$(opt @pitwall-tab-caps on)" = on ]; then L='' R=''; else L=' ' R=' '; fi # Nerd Font half circles
   count() { printf '%s' "#{n:#{W:#{P:#{?#{==:$S,$1},x,}}}}"; }
   A=$(count asking) D=$(count done) K=$(count working)
+  tmux set -g @pitwall-tabs-workspace-bg "#{?$AUTO_ON,$bg_format,}" \
+    \; set -g @pitwall-tabs-workspace-fg "#{?$AUTO_ON,$fg_format,}"
+  workspace_bg='#{E:@pitwall-tabs-workspace-bg}' workspace_fg='#{E:@pitwall-tabs-workspace-fg}'
+  here_bg="#{?$workspace_bg,$workspace_bg,$ASK}" here_fg="#{?$workspace_fg,$workspace_fg,$DARK}"
+  away_bg="#{?$workspace_bg,$workspace_bg,$PILL}" away_fg="#{?$workspace_fg,$workspace_fg,$DIM}"
+  tab_bg="#{?$HAS_DRAFT,#{@pitwall_draft_bg},#{?$workspace_bg,$workspace_bg,$TABBG}}"
+  tab_fg="#{?$HAS_DRAFT,#{@pitwall_draft_fg},#{?$workspace_fg,$workspace_fg,$TEXT}}"
+  tab_number="#{?#{||:$HAS_DRAFT,$workspace_bg},$tab_fg,$ASK}"
+  draft_glyph=$(glyph '' '' '' "#{?$DRAFT_LABEL,Draft ,}")
+  managed_glyph=$(glyph "$URGENT" '' '')
+  tmux set -g @pitwall-tabs-managed-glyph "$managed_glyph"
+  tab_glyph="#{?$HAS_DRAFT,$draft_glyph,#{?$workspace_bg,#{E:@pitwall-tabs-managed-glyph},#{E:@pitwall-glyph}}}"
+  away_ask="#{?$workspace_fg,$workspace_fg,$ASK}" away_done="#{?$workspace_fg,$workspace_fg,$DONE}"
+  away_work="#{?$workspace_fg,$workspace_fg,$MUTED}"
   # Room per tab: what the pills leave, shared by the windows, between 6 and 24 cells.
   X='#{e|-:#{e|/:#{e|-:#{client_width},#{e|*:#{server_sessions},16}},#{session_windows}},7}'
   tmux set -g @pitwall-tab-width "#{?#{e|<:$X,6},6,#{?#{e|>:$X,24},24,$X}}"
   NAME='#{=/#{E:@pitwall-tab-width}/…:window_name}'
-  # The open workspace's tabs share an amber underline, as a Chrome tab group shares its colour; the current tab is
-  # lifted off the strip, with its number in amber. Numbers are there for prefix 1-9.
-  TAB_OFF="#[range=window|#{window_index}]#[fg=$DIM bg=$STRIP underscore us=$ASK] #{window_index} #{E:@pitwall-glyph}#[fg=$MUTED nobold]$NAME #[norange]"
-  TAB_ON="#[range=window|#{window_index}]#[fg=$TABBG bg=$STRIP nounderscore]$L#[fg=$ASK bg=$TABBG bold underscore us=$ASK]#{window_index} #[fg=$DIM nobold]#{E:@pitwall-glyph}#[fg=$TEXT bold]$NAME#[fg=$TABBG bg=$STRIP nobold nounderscore]$R#[norange]"
-  HERE="#[range=session|#{session_id}]#[fg=$ASK bg=$STRIP]$L#[fg=$DARK bg=$ASK bold]#{session_name}#[fg=$ASK bg=$STRIP nobold]$R#[norange]#{W:$TAB_OFF,$TAB_ON}#[nounderscore bg=$STRIP]   "
-  AWAY="#[range=session|#{session_id}]#[fg=$PILL bg=$STRIP]$L#[fg=$DIM bg=$PILL]#{session_name}#{?$A, #[fg=$ASK bold]◆$A#[nobold],}#{?$D, #[fg=$DONE bold]✓$D#[nobold],}#{?$K, #[fg=$MUTED]#{?#{@pitwall_spin},#{@pitwall_spin},⠙}$K,}#[fg=$PILL bg=$STRIP]$R#[norange]  "
+  # Adjacent segments of the same managed colour share an edge while retaining separate mouse targets.
+  join="#{&&:$workspace_bg,#{&&:#{window_start_flag},#{==:$here_bg,$tab_bg}}}"
+  tab_open="#[fg=$tab_bg bg=$STRIP nounderscore]$L"
+  tab_close="#[fg=$tab_bg bg=$STRIP nobold nounderscore]$R"
+  normal_off="#[fg=$DIM bg=$STRIP underscore us=$here_bg] #{window_index} #{E:@pitwall-glyph}#[fg=$MUTED nobold]$NAME "
+  draft_off="$tab_open#[fg=$tab_fg bg=$tab_bg nobold]#{window_index} $draft_glyph$NAME$tab_close"
+  TAB_OFF="#[range=window|#{window_index}]#{?$HAS_DRAFT,$draft_off,$normal_off}#[norange]"
+  TAB_ON="#[range=window|#{window_index}]#{?$join,,$tab_open}#[fg=$tab_number bg=$tab_bg bold underscore us=$tab_number]#{window_index} #[fg=$tab_fg nobold]$tab_glyph#[fg=$tab_fg bold]$NAME$tab_close#[norange]"
+  tmux set -g @pitwall-tabs-window "$TAB_OFF" \; set -g @pitwall-tabs-current "$TAB_ON"
+  group_close="#{?#{?$EMPTY_WINDOW,0,$join},#[bg=$here_bg] ,#[fg=$here_bg bg=$STRIP nobold]$R}"
+  HERE="#[range=session|#{session_id}]#[fg=$here_bg bg=$STRIP]$L#[fg=$here_fg bg=$here_bg bold]#{session_name}$group_close#[norange]#{W:#{?$EMPTY_WINDOW,,#{E:@pitwall-tabs-window}},#{?$EMPTY_WINDOW,,#{E:@pitwall-tabs-current}}}#[nounderscore bg=$STRIP]   "
+  AWAY="#[range=session|#{session_id}]#[fg=$away_bg bg=$STRIP]$L#[fg=$away_fg bg=$away_bg]#{session_name}#{?$A, #[fg=$away_ask bold]◆$A#[nobold],}#{?$D, #[fg=$away_done bold]✓$D#[nobold],}#{?$K, #[fg=$away_work]#{?#{@pitwall_spin},#{@pitwall_spin},⠙}$K,}#[fg=$away_bg bg=$STRIP]$R#[norange]  "
+  work_window="#[range=session|#{session_id}]#[fg=$MUTED bg=$STRIP underscore us=$away_bg] #{window_index} #{E:@pitwall-glyph}$NAME #[norange]"
+  AWAY_WORK="#[range=session|#{session_id}]#[fg=$away_bg bg=$STRIP]$L#[fg=$away_fg bg=$away_bg]#{session_name}#[fg=$away_bg bg=$STRIP]$R#[norange]#{W:#{?$EMPTY_WINDOW,,$work_window}}#[nounderscore]   "
+  current_session='#{==:#{session_name},#{client_session}}'
+  tmux set -g @pitwall-tabs-away "#{?$WORKING_GROUP,$AWAY_WORK,$AWAY}"
+  tmux set -g @pitwall-tabs-session "#{?$current_session,$HERE,#{E:@pitwall-tabs-away}}"
+  groups="#{?$AUTO_ON,$groups,}#{S:#{?#{?$AUTO_ON,$not_managed,1},#{E:@pitwall-tabs-session},}}"
   RIGHT="#{?client_prefix,#[fg=$ASK bold]prefix#[nobold]  ,}#{?#{&&:#{@pitwall_restorable},#{!=:#{@pitwall_restorable},0}},#[fg=$ASK]↺ #{@pitwall_restorable}  ,}#{E:@pitwall-segments}"
-  tmux set -g @pitwall-tabs-fmt "#[fill=$STRIP bg=$STRIP]#[align=left] #{S:#{?#{==:#{session_name},#{client_session}},$HERE,$AWAY}}#[align=right bg=$STRIP]$RIGHT"
+  tmux set -g @pitwall-tabs-fmt "#[fill=$STRIP bg=$STRIP]#[align=left] $groups#[align=right bg=$STRIP]$RIGHT"
   # The right side gives way as the pane narrows: everything, then cpu, memory and disk, then the clock alone.
   ROOM='#{e|-:#{pane_width},#{?pane_at_left,60,0}}'
   FULL="#{E:@pitwall-rule-segments}#{?#{@pitwall_system},#{@pitwall_system}#[fg=$SEP] · ,}#[fg=$TEXT]#{@pitwall_clock} #[default]" # plugins' rule pieces first
@@ -107,30 +178,63 @@ if [ "$(opt @pitwall-layout inline)" = tabs ]; then
   CLOCK="#[fg=$TEXT]#{=5:@pitwall_clock} #[default]"
   tmux set -g @pitwall-rule-fmt "#{?pane_at_bottom,#{?pane_at_left,#[fg=$MUTED] #{?#{@pitwall_quota},#{@pitwall_quota} ,}#[default],}#[align=right]#{?pane_at_right, #{?#{e|>=:$ROOM,92},$FULL,#{?#{e|>=:$ROOM,48},$SHORT,$CLOCK}},},}"
   # Remember what the theme had, once, to give it back if the layout is switched off.
-  [ -n "$(tmux show -gqv @pitwall_prev_position)" ] || tmux set -g @pitwall_prev_position "$(tmux show -gv status-position)" \; set -g @pitwall_prev_border "$(tmux show -gwv pane-border-status)"
+  if [ "$(tmux show -gqv 'status-format[0]')" != '#{E:@pitwall-tabs-fmt}' ]; then
+    tmux set -g @pitwall_prev_status "$(tmux show -gqv 'status-format[0]')" \
+      \; set -g @pitwall_prev_position "$(tmux show -gv status-position)" \
+      \; set -g @pitwall_prev_border "$(tmux show -gwv pane-border-status)" \
+      \; set -g @pitwall_prev_border_format "$(tmux show -gwv pane-border-format)"
+  fi
   tmux set -g 'status-format[0]' '#{E:@pitwall-tabs-fmt}' \; set -g status-position top \
     \; setw -g pane-border-status bottom \; setw -g pane-border-format '#{E:@pitwall-rule-fmt}'
   tmux set -g @pitwall_clock "$(date '+%H:%M %d %b')"
   tmux set-hook -g 'client-attached[76]' "run-shell -b \"'$DIR/bin/pitwall-sys'\""
   tmux set -gu @pitwall_sys_pid \; run-shell -b "'$DIR/bin/pitwall-sys'" # a running one hands over at its next tick
 elif [ "$(tmux show -gv 'status-format[0]')" = '#{E:@pitwall-tabs-fmt}' ]; then
-  tmux set -gu status-format \; set -g status-position "$(opt @pitwall_prev_position bottom)" \
-    \; setw -g pane-border-status "$(opt @pitwall_prev_border off)" \; setw -gu pane-border-format \
+  if tmux show -g @pitwall_prev_status >/dev/null 2>&1; then
+    tmux set -g 'status-format[0]' "$(tmux show -gqv @pitwall_prev_status)"
+  else tmux set -gu 'status-format[0]'; fi
+  if tmux show -g @pitwall_prev_border_format >/dev/null 2>&1; then
+    tmux setw -g pane-border-format "$(tmux show -gqv @pitwall_prev_border_format)"
+  else tmux setw -gu pane-border-format; fi
+  tmux set -g status-position "$(opt @pitwall_prev_position bottom)" \
+    \; setw -g pane-border-status "$(opt @pitwall_prev_border off)" \
+    \; set -gu @pitwall_prev_status \; set -gu @pitwall_prev_border_format \
     \; set -gu @pitwall_prev_position \; set -gu @pitwall_prev_border \; set-hook -gu 'client-attached[76]'
 fi
 
 # Agent windows are named after the agent's directory instead of the process (2.1.323 → dotfiles).
 # The hook records it (@pitwall_name): the pane's current path follows every command the agent runs.
-if [ "$(opt @pitwall-rename on)" = on ]; then
-  a=$(tmux show -gv automatic-rename-format)
-  case $a in *'@pitwall_name'*) ;; *) tmux set -g automatic-rename-format "#{?#{@pitwall_name},#{@pitwall_name},#{?#{&&:#{m/r:$AGENT,#{pane_current_command}},#{pane_start_path}},#{b:pane_start_path},$a}}" ;; esac
-fi
+a=$(tmux show -gv automatic-rename-format)
+case $a in
+  *'@pitwall_rename_base'*) ;;
+  *)
+    # Unwrap the previous Pitwall format before adding a live switch for the preference.
+    case $a in
+      '#{?#{@pitwall_name},#{@pitwall_name},'*'#{b:pane_start_path},'*) a=${a#*'#{b:pane_start_path},'}; a=${a%??} ;;
+    esac
+    tmux set -g @pitwall_rename_base "$a"
+    tmux set -g automatic-rename-format "#{?#{==:#{@pitwall-rename},off},#{E:@pitwall_rename_base},#{?#{@pitwall_name},#{@pitwall_name},#{?#{&&:#{m/r:$AGENT,#{pane_current_command}},#{pane_start_path}},#{b:pane_start_path},#{E:@pitwall_rename_base}}}}"
+    ;;
+esac
 
 # The unread mark: visiting a window turns its panes that finished while you were away from done into idle.
-CLEAR="if -F '#{m:*done*,#{P:#{@pitwall_state} }}' \"run-shell -b \\\"'$DIR/bin/pitwall' seen '#{window_id}'\\\"\""
+# A new routed workspace selects its first tab without a viewer; keep its unread mark until someone visits.
+CLEAR="if -F '#{&&:#{m:*done*,#{P:#{@pitwall_state} }},#{?#{||:#{@pitwall_managed_workspace},#{@pitwall_managed_bucket}},#{session_attached},1}}' \"run-shell -b \\\"'$DIR/bin/pitwall' seen '#{window_id}'\\\"\""
 tmux set-hook -g 'session-window-changed[73]' "$CLEAR"
 tmux set-hook -g 'client-session-changed[73]' "$CLEAR"
 tmux set-hook -g 'client-attached[73]' "$CLEAR"
+
+# A route deferred while a tab is visible gets a new chance when the client leaves.
+ROUTE="if -F '#{==:#{@pitwall_automanaged},on}' \"run-shell -b \\\"'$DIR/bin/pitwall' _route\\\"\""
+for h in session-window-changed client-session-changed client-detached session-closed; do
+  tmux set-hook -g "${h}[80]" "$ROUTE"
+done
+# A window becomes eligible when its last shell closes, or when a hookless agent is recognized.
+ROUTE_TAB="run-shell -b \"'$DIR/bin/pitwall' _route '#{window_id}'\""
+tmux set-hook -g 'after-new-window[80]' "if -F '$ROUTE_NEEDED' { $ROUTE_TAB }"
+tmux set-hook -g 'window-layout-changed[80]' "if -F '$ROUTE_NEEDED' { $ROUTE_TAB }"
+tmux set-hook -gw 'pane-title-changed[80]' "if -F '#{?@pitwall_session,0,$ROUTE_NEEDED}' { $ROUTE_TAB }"
+tmux if-shell -F '#{==:#{@pitwall_automanaged},on}' "run-shell -b \"'$DIR/bin/pitwall' _route\""
 
 # With renumber-windows on, a window moving out of a session closes its gap too, not only one that closes
 # (prefix . , the dashboard's move, pitwall move). Deferred: while the hook runs, the window is still linked.
@@ -149,12 +253,34 @@ for b in /opt/homebrew/bin/bash /usr/local/bin/bash; do [ -x "$b" ] && BASH_BIN=
 # dashboard, where everything else is; the jump and restore keep keys of their own because they are one step.
 # tmux 3.7c lets scrolling panes overwrite a centred popup's top edge with status at the top.
 DASH_Y=C
-if [ "$(tmux display -p '#{version}')" = 3.7c ]; then
+if [ "$TMUX_VERSION" = 3.7c ]; then
   DASH_Y='#{?#{&&:#{!=:#{status},off},#{==:#{status-position},top}},0,#{popup_centre_y}}'
 fi
-tmux bind -N "pitwall: the dashboard (type to find a lane, a workspace or an action; tab for actions)" "$KEY_DASH" display-popup -E -w 84% -h 78% -y "$DASH_Y" -b rounded -S "fg=#404040" "'$BASH_BIN' '$DIR/bin/pitwall-dash'"
+remember_key() {
+  old=$(tmux show -gqv "@pitwall_bound_$1")
+  if [ -n "$old" ] && [ "$old" != "$2" ]; then
+    case $(settings_binding "$old") in
+      *"$DIR/bin/pitwall"*) tmux unbind-key -T prefix -- "$old" ;;
+    esac
+  fi
+  tmux set -g "@pitwall_bound_$1" "$2"
+}
+remember_key dashboard "$KEY_DASH"
+remember_key next "$KEY_NEXT"
+remember_key restore "$KEY_RESTORE"
+set -- -b rounded -S 'fg=#404040'
+case $TMUX_VERSION in 3.2*) set -- ;; esac
+tmux bind -N "pitwall: the dashboard (type to find a lane, a workspace or an action; tab for actions)" "$KEY_DASH" display-popup -E -w 84% -h 78% -y "$DASH_Y" "$@" "'$BASH_BIN' '$DIR/bin/pitwall-dash'"
 tmux bind -N "pitwall: next lane that needs you (again to cycle)" "$KEY_NEXT" run-shell "'$DIR/bin/pitwall' next"
-tmux bind -N "pitwall: find a recoverable lane" "$KEY_RESTORE" display-popup -E -w 84% -h 78% -y "$DASH_Y" -b rounded -S "fg=#404040" "'$BASH_BIN' '$DIR/bin/pitwall-dash' --restore"
+tmux bind -N "pitwall: find a recoverable lane" "$KEY_RESTORE" display-popup -E -w 84% -h 78% -y "$DASH_Y" "$@" "'$BASH_BIN' '$DIR/bin/pitwall-dash' --restore"
+for direction in p n; do
+  if [ "$direction" = p ]; then key='('; else key=')'; fi
+  case $(settings_binding "$key") in
+    *" switch-client -$direction" | *"$DIR/bin/pitwall' _cycle $direction"*)
+      tmux bind-key -T prefix "$key" if-shell -F "$AUTO_ON" \
+        "run-shell \"'$DIR/bin/pitwall' _cycle $direction #{q:client_name}\"" "switch-client -$direction" ;;
+  esac
+done
 # Keys earlier versions bound and the dashboard replaces: unbound only while they still point at pitwall.
 for k in $(tmux list-keys -T prefix 2>/dev/null | awk '/pitwall-board|pitwall-ws/ { for (i = 1; i < NF; i++) if ($i == "prefix") { print $(i + 1); break } }'); do
   tmux unbind "$k"

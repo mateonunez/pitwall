@@ -8,6 +8,8 @@ HOOK="$DIR/bin/pitwall-hook"
 STATE=${XDG_STATE_HOME:-$HOME/.local/state}/pitwall
 TAB=$(printf '\t')
 . "$DIR/lib/pitwall-features.sh"
+. "$DIR/lib/pitwall-settings.sh"
+. "$DIR/lib/pitwall-preview.sh"
 
 usage() {
   cat <<'EOF'
@@ -34,6 +36,8 @@ pitwall: see and steer coding agents from tmux
   pitwall ws [new|go|rename|close] …          workspaces (tmux sessions): list them, or manage one
   pitwall up [name] [--dry] · --list · --save [ws]  a workspace from a small file: tabs, agents, servers, nvim
   pitwall move <@N|window> <workspace>        move a lane's window, agents still running, to a workspace
+  pitwall settings [<name> [<value>]]        list, read or save preferences
+  pitwall plan [add|drop|start <recipe>]       list or manage planned workspace recipes
   pitwall install [--write] show (or add) the hook lines for Claude Code and Codex
   pitwall doctor            what is missing; exits 1 when something is
   pitwall demo [stop]       a throwaway tmux server with fake lanes, to look at pitwall
@@ -43,15 +47,15 @@ EOF
 }
 
 # One row per lane (a pane running an agent), tab-separated, ordered by what needs you:
-# rank state session window pane-id since harness title transcript session-id urgent folder question choices favorite pending-handoff. A window with several panes names them window.N.
+# rank state session window pane-id since harness title transcript session-id urgent folder question choices favorite pending-handoff managed labels draft. A window with several panes names them window.N.
 lanes() (
   workspace=${1:-} roots=${2:-}
   if [ -n "$workspace" ]; then set -- -s -t "=$workspace"; else set -- -a; fi
   fmt=$(tmux show -gqv @pitwall-state-fmt)
   [ -n "$fmt" ] || { echo "pitwall: not loaded in this tmux server (run pitwall.tmux)" >&2; exit 1; }
-  rows=$(tmux list-panes "$@" -F "#{E:@pitwall-state-fmt}	#{session_name}	#{window_name}#{?#{>:#{window_panes},1},.#{pane_index},}	#{pane_id}	#{@pitwall_since}	#{?#{@pitwall_harness},#{@pitwall_harness},#{?#{==:#{pane_current_command},codex},codex,#{?#{m/r:^(claude|[0-9.]+)$,#{pane_current_command}},claude,}}}	#{pane_title}	#{@pitwall_transcript}	#{@pitwall_session}	#{?#{@pitwall_urgent},urgent,-}	#{pane_current_path}	#{@pitwall_question}	#{@pitwall_choices}	#{?#{==:#{@pitwall_favorite},1},1,0}	#{?#{==:#{@pitwall_handoff_recipient},#{pane_pid}:#{@pitwall_session}},#{?#{@pitwall_handoff},#{@pitwall_handoff},-},-}") || exit 1
+  rows=$(tmux list-panes "$@" -F "#{E:@pitwall-state-fmt}	#{session_name}	#{window_name}#{?#{>:#{window_panes},1},.#{pane_index},}	#{pane_id}	#{@pitwall_since}	#{?#{@pitwall_harness},#{@pitwall_harness},#{?#{==:#{pane_current_command},codex},codex,#{?#{m/r:^(claude|[0-9.]+)$,#{pane_current_command}},claude,}}}	#{pane_title}	#{@pitwall_transcript}	#{@pitwall_session}	#{?#{@pitwall_urgent},urgent,-}	#{pane_current_path}	#{@pitwall_question}	#{@pitwall_choices}	#{?#{==:#{@pitwall_favorite},1},1,0}	#{?#{==:#{@pitwall_handoff_recipient},#{pane_pid}:#{@pitwall_session}},#{?#{@pitwall_handoff},#{@pitwall_handoff},-},-}	#{?#{@pitwall_managed_origin},1,0}	#{?#{==:#{@pitwall_automanaged},on},1,0}	#{?#{&&:#{==:#{@pitwall_automanaged},on},$DRAFT_KIND},#{?#{==:#{@pitwall_managed_bucket},draft},workspace,pane},-}") || exit 1
   printf '%s\n' "$rows" |
-    PITWALL_LIST_WORKSPACE="$workspace" PITWALL_LIST_ROOTS="$roots" awk -F '\t' '
+    PITWALL_LIST_WORKSPACE="$workspace" PITWALL_LIST_ROOTS="$roots" PITWALL_LABELS="$STATE/labels" awk -F '\t' '
       BEGIN { OFS = "\t"; split("asking done working idle gone", o, " "); for (i in o) rank[o[i]] = i
         workspace = ENVIRON["PITWALL_LIST_WORKSPACE"]
         n = split(ENVIRON["PITWALL_LIST_ROOTS"], roots, "\n") }
@@ -67,6 +71,14 @@ lanes() (
         t = $7; sub(/^\[ [^]]* \] Action Required \| /, "", t)  # Codex waiting for you (it blinks "[ ! ]" / "[ . ]")
         if (t ~ /^[^A-Za-z0-9]+ /) sub(/^[^ ]+ /, "", t)           # spinner or ✳ in front of the task
         sub(/ \| [^|]*$/, "", t); $7 = t                         # Codex appends " | <dir>"
+        labels = ""
+        if ($17 == 1 && $6 ~ /^[A-Za-z0-9_.-]+$/ && $9 ~ /^[A-Za-z0-9:_.-]+$/) {
+          path = ENVIRON["PITWALL_LABELS"] "/" $6 ":" $9
+          while ((getline word < path) > 0)
+            if (word ~ /^[a-z0-9_-]+$/ && length(word) <= 32) labels = labels (labels ? " " : "") word
+          close(path)
+        }
+        $17 = labels
         print rank[$1], $0
       }' |
     sort -t "$(printf '\t')" -k1,1n -k3,3 -k4,4
@@ -167,6 +179,9 @@ cmd_seen() {
     if [ "$state" = done ]; then tmux set -p -t "$pane" @pitwall_state idle; fi # not &&: under set -e a false test ending the loop fails the command
   done
   tmux refresh-client -S 2>/dev/null || true
+  if [ "$(tmux show -gqv @pitwall_automanaged)" = on ]; then
+    tmux run-shell -b "'$DIR/bin/pitwall' _route"
+  fi
 }
 
 # The lane after this one among those asking or done, wrapping; pressed again it cycles through them.
@@ -214,6 +229,7 @@ cmd_stats() {
 
 # quota [--refresh]: CodexBar's usage limits, rendered once into @pitwall_quota for the status line and the dashboard.
 cmd_quota() {
+  [ "$(tmux show -gqv @pitwall-quota)" != off ] || return 0
   bar=$(tmux show -gqv @pitwall-codexbar 2>/dev/null)
   bar=${bar:-/Applications/CodexBar.app/Contents/Helpers/CodexBarCLI}
   if [ "${1:-}" != --refresh ]; then tmux show -gqv @pitwall_quota_plain 2>/dev/null; return; fi
@@ -234,7 +250,7 @@ cmd_quota() {
 # Each workspace with its windows and its lanes by state: name attached windows asking done working idle.
 workspaces() {
   counts=$(lanes 2>/dev/null | awk -F '\t' '{ n[$3 FS $2]++ } END { for (k in n) print k FS n[k] }')
-  tmux list-sessions -F '#{session_name}	#{session_attached}	#{session_windows}' | while IFS="$TAB" read -r name attached windows; do
+  tmux list-sessions -F "#{session_name}$TAB#{session_attached}$TAB$WORKSPACE_WINDOWS" | while IFS="$TAB" read -r name attached windows; do
     printf '%s\n' "$counts" | awk -F '\t' -v s="$name" -v a="$attached" -v w="$windows" -v OFS='\t' '
       $1 == s { c[$2] = $3 } END { print s, a, w, c["asking"] + 0, c["done"] + 0, c["working"] + 0, c["idle"] + c["gone"] + 0 }'
   done
@@ -242,7 +258,7 @@ workspaces() {
 
 # The restore records of a window's agents now point where the window lives.
 follow() {
-  tmux list-panes -t "$1" -F '#{@pitwall_session}	#{session_name}	#{window_index}	#{window_name}	#{pane_index}' 2>/dev/null |
+  tmux list-panes -t "$1" -F '#{@pitwall_session}	#{?#{@pitwall_managed_origin},#{@pitwall_managed_origin},#{session_name}}	#{?#{@pitwall_managed_origin},#{@pitwall_managed_index},#{window_index}}	#{window_name}	#{pane_index}' 2>/dev/null |
     while IFS="$TAB" read -r sid sname widx wname pidx; do
       f="$STATE/lanes/$sid"
       [ -n "$sid" ] && [ -f "$f" ] || continue
@@ -267,12 +283,14 @@ move_window() {
   name=$(tmux display -p -t "$win" '#{window_name}') || { echo "pitwall: no such window" >&2; return 1; }
   if tmux has-session -t "=$ws" 2>/dev/null; then
     tmux move-window -d -s "$win" -t "=$ws:"
+    prune_empty "=$ws:"
   else
     # A new session starts with a shell window: the moved window takes its place.
     placeholder=$(tmux new-session -d -P -F '#{window_index}' -s "$ws" -c "$(tmux display -p -t "$win" '#{pane_current_path}')")
     tmux move-window -d -k -s "$win" -t "=$ws:$placeholder"
     created=" (new workspace)"
   fi
+  tmux set -wu -t "$win" @pitwall_managed_origin \; set -wu -t "$win" @pitwall_managed_index
   follow "$win"
   echo "moved $name to $ws${created:-}"
 }
@@ -330,6 +348,18 @@ cmd_ws() {
   esac
 }
 
+cycle_workspace() {
+  direction=$1 client=$2
+  target=$(tmux list-clients -F '#{client_name} #{session_id} #{E:@pitwall-workspace-order}' |
+    awk -v client="$client" -v direction="$direction" '
+      $1 == client && NF > 2 {
+        for (i = 3; i <= NF && $i != $2; i++) { }
+        if (direction == "n") print $(i >= NF ? 3 : i + 1)
+        else print $(i <= 3 || i > NF ? NF : i - 1)
+      }')
+  [ -z "$target" ] || tmux switch-client -c "$client" -t "$target"
+}
+
 # --- plugins -------------------------------------------------------------------------------------------------
 
 # A plugin is a folder with a plugin.toml and one executable pitwall calls: `hook <event> …` on lane events, `view`
@@ -339,7 +369,7 @@ cmd_ws() {
 PLUGINS=${XDG_DATA_HOME:-$HOME/.local/share}/pitwall/plugins
 PINDEX=$STATE/plugins.tsv
 LANE_EVENTS='lane.state lane.urgent' # what plugins can listen to
-BUILTINS='ls peek go answer send handoff seen next dash board stats features quota saved restore forget new done ws up move install doctor demo keys plugin plugins version help'
+BUILTINS='ls peek go answer send handoff seen next dash board stats features settings plan quota saved restore forget new done ws up move install doctor demo keys plugin plugins version help'
 
 manifest() { # manifest <dir> → key <tab> value, plugin.toml's top level (tables, if any, are not read)
   awk '
@@ -629,19 +659,48 @@ cmd__escalate() {
   name=$(tmux display -p -t "$pane" '#{window_name}#{?#{>:#{window_panes},1},.#{pane_index},}')
   mins=$((($(date +%s) - since) / 60))
   tmux set -p -t "$pane" @pitwall_urgent 1
-  for c in $(tmux list-clients -F '#{client_name}'); do tmux refresh-client -S -t "$c" \; display-message -c "$c" -d 4000 "◆ $name has waited ${mins}m"; done
+  for c in $(tmux list-clients -F '#{client_name}'); do tmux refresh-client -S -t "$c" \; display-message -c "$c" "◆ $name has waited ${mins}m"; done
   cmd__emit lane.urgent "$pane" "$mins"
   return 0
 }
 
 # --- save and restore --------------------------------------------------------------------------------------
 
-# Saved lanes, newest record per pane position, as: harness sid cwd session window-index window pane server updated.
+# Saved lanes, newest record per pane, as: harness sid cwd session window-index window pane server updated.
 records() {
   [ -d "$STATE/lanes" ] || return 0
   find "$STATE/lanes" -type f -mtime +14 -delete 2>/dev/null # two weeks is long enough to come back for
   cat "$STATE/lanes"/* 2>/dev/null | awk 'NF' | sort -t "$TAB" -k9,9nr |
-    awk -F '\t' '!seen[$4 FS $5 FS $7]++' | sort -t "$TAB" -k4,4 -k5,5n -k7,7n
+    awk -F '\t' '
+      BEGIN { OFS = FS }
+      {
+        routed = $5 ~ /^[0-9]+@[0-9]+$/
+        if (routed) {
+          split($5, origin, "@")
+          key = "tab" FS $8 FS origin[2]
+        } else {
+          key = "slot" FS $4 FS $5
+          used[$4 FS $5] = 1
+        }
+        if (seen[key FS $7]++) next
+        row[++n] = $0
+        if (routed) tab[n] = key
+      }
+      END {
+        for (i = 1; i <= n; i++) {
+          $0 = row[i]; key = tab[i]
+          if (key != "") {
+            if (!(key in assigned)) {
+              pos = $5 + 0
+              while (used[$4 FS pos]) pos++
+              used[$4 FS pos] = 1
+              assigned[key] = pos
+            }
+            $5 = assigned[key]
+          }
+          print
+        }
+      }' | sort -t "$TAB" -k4,4 -k5,5n -k7,7n
 }
 
 server_pid() { tmux display -p '#{pid}' 2>/dev/null || echo none; }
@@ -696,12 +755,7 @@ cmd_restore() (
   fi
   case $mode in
     --count | --list | --dry) ;;
-    *)
-      lock=pitwall-restore
-      tmux wait-for -L "$lock" || return 1
-      trap 'tmux wait-for -U "$lock" 2>/dev/null' EXIT
-      trap 'exit 1' HUP INT TERM
-      ;;
+    *) route_lock || return 1 ;; # keep the panes of each saved tab together while restoring
   esac
   plan=$(restore_plan "$mode" "$wanted")
   if [ "$mode" = --list ]; then [ -z "$plan" ] || printf '%s\n' "$plan"; return 0; fi
@@ -998,7 +1052,11 @@ up_run() { # up_run <file> <dry> [workspace]: bring the recipe up; what is there
   spare=''
   if ! tmux has-session -t "=$ws" 2>/dev/null; then
     if [ -n "$dry" ]; then echo "+ $ws  would make the workspace"
-    else spare=$(tmux new-session -d -P -F '#{window_id}' -s "$ws" -c "$wsdir") && printf '✓ %-12s workspace made\n' "$ws"; fi
+    else
+      spare=$(tmux new-session -d -P -F '#{window_id}' -s "$ws" -c "$wsdir") || return 1
+      [ -n "$spare" ] || return 1
+      printf '✓ %-12s workspace made\n' "$ws"
+    fi
   fi
   skip='' pane=''
   printf '%s\n' "$rows" | tr '\t' '\037' | while IFS=$(printf '\037') read -r kind a b c d e f g; do
@@ -1007,7 +1065,7 @@ up_run() { # up_run <file> <dry> [workspace]: bring the recipe up; what is there
         name=$a skip='' pane=''
         tdir=$(printf '%s' "$b" | sed "s|^~|$HOME|"); case $tdir in '') tdir=$wsdir ;; /*) ;; *) tdir=$wsdir/$tdir ;; esac # relative to the workspace's folder
         [ -n "$name" ] || name=$(basename "$tdir")
-        if tmux list-windows -t "=$ws" -F '#{window_name}' 2>/dev/null | grep -qxF -- "$name"; then
+        if workspace_windows "$ws" 4 | grep -qxF -- "$name"; then
           st=$(tmux list-panes -t "=$ws:$name" -F '#{@pitwall_state}' 2>/dev/null | grep . | head -1)
           printf '· %-12s already up%s\n' "$name" "${st:+ ($st)}"; skip=1; continue
         fi
@@ -1025,12 +1083,14 @@ up_run() { # up_run <file> <dry> [workspace]: bring the recipe up; what is there
         else cmd='' what="${what}a shell"; fi
         if [ -n "$dry" ]; then printf '+ %-12s would open: %s\n' "$name" "$what"; continue; fi
         if [ -n "$spare" ]; then # the workspace's first window becomes the first tab
-          tmux rename-window -t "$spare" "$name"; tmux respawn-pane -k -t "$spare" -c "$tdir"
-          pane=$(tmux display -p -t "$spare" '#{pane_id}'); spare=''
+          tmux rename-window -t "$spare" "$name" && tmux respawn-pane -k -t "$spare" -c "$tdir" || return 1
+          pane=$(tmux display -p -t "$spare" '#{pane_id}') || return 1
+          spare=''
         else
-          pane=$(tmux new-window -d -P -F '#{pane_id}' -t "=$ws:" -n "$name" -c "$tdir")
+          pane=$(tmux new-window -d -P -F '#{pane_id}' -t "=$ws:" -n "$name" -c "$tdir") || return 1
         fi
-        [ -n "$cmd" ] && tmux send-keys -t "$pane" "$cmd" Enter
+        case $pane in %*) ;; *) return 1 ;; esac
+        if [ -n "$cmd" ]; then tmux send-keys -t "$pane" "$cmd" Enter || return 1; fi
         printf '✓ %-12s %s\n' "$name" "$what"
         ;;
       P)
@@ -1038,8 +1098,9 @@ up_run() { # up_run <file> <dry> [workspace]: bring the recipe up; what is there
         cmd=$b; [ -n "$a" ] && cmd=$(up_agent "$a" "$tdir" '' "$c")
         [ -n "$dry" ] && { printf '+ %-12s   and a pane: %s\n' "$name" "${a:-$b}"; continue; }
         [ -n "$pane" ] || continue
-        p=$(tmux split-window -d -P -F '#{pane_id}' -t "$pane" -c "$tdir")
-        [ -n "$cmd" ] && tmux send-keys -t "$p" "$cmd" Enter
+        p=$(tmux split-window -d -P -F '#{pane_id}' -t "$pane" -c "$tdir") || return 1
+        case $p in %*) ;; *) return 1 ;; esac
+        if [ -n "$cmd" ]; then tmux send-keys -t "$p" "$cmd" Enter || return 1; fi
         ;;
       I)
         inc=$(up_find "$a") || { echo "! include $a: no recipe there" >&2; continue; }
@@ -1058,7 +1119,7 @@ up_list() { # up_list [--plain]: the recipes it knows, and how much of each is u
     ws=$(printf '%s\n' "$rows" | awk -F '\t' '$1 == "W" { print $3 }'); ws=${ws:-$name}
     tabs=$(printf '%s\n' "$rows" | awk -F '\t' '$1 == "T" { print $2 }')
     n=$(printf '%s\n' "$tabs" | grep -c .) up=0
-    have=$(tmux list-windows -t "=$ws" -F '#{window_name}' 2>/dev/null || true)
+    have=$(workspace_windows "$ws" 4)
     for t in $tabs; do printf '%s\n' "$have" | grep -qxF -- "$t" && up=$((up + 1)); done
     if [ "${1:-}" = --plain ]; then printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$ws" "$n" "$up" "$r"
     else
@@ -1096,7 +1157,7 @@ up_save() { # up_save [workspace] [--auto]: a recipe from a workspace that is op
   }
   {
     printf '# pitwall up %s: saved from the open workspace and kept current; edit it and it stays as you leave it\nworkspace = %s\n' "$ws" "$(q "$ws")"
-    tmux list-windows -t "=$ws" -F '#{window_id}' | while read -r win; do
+    workspace_windows "$ws" 3 | while read -r win; do
       first=1
       # "-" for an empty harness: read merges consecutive tabs (and tmux 3.4 escapes a \037 separator)
       tmux list-panes -t "$win" -F "#{pane_pid}$TAB#{pane_current_command}$TAB#{?#{@pitwall_harness},#{@pitwall_harness},-}$TAB#{?#{@pitwall_session},#{@pitwall_session},-}$TAB#{pane_current_path}$TAB#{window_name}" |
@@ -1137,7 +1198,7 @@ cmd__autosave() { # _autosave <workspace>: from tmux's hooks; a moment later, so
   return 0
 }
 
-cmd_up() {
+cmd_up() (
   dry='' yes=''
   while :; do
     case ${1:-} in
@@ -1151,9 +1212,12 @@ cmd_up() {
   file=$(up_find "${1:-}") || { echo "pitwall up: no recipe ${1:+for $1 }(a .pitwall.toml here, or $(printf '%s' "$UPDIR" | sed "s|^$HOME|~|")/<name>.toml)" >&2; exit 1; }
   up_trust "$file" $yes || exit 1
   case $file in "$UPDIR"/*) ;; *) mkdir -p "$UPDIR" && n=$(up_name "$file") && [ ! -f "$UPDIR/$n.toml" ] && echo "$file" >"$UPDIR/$n.link" ;; esac # --list knows it next time
-  [ -n "$dry" ] || feature_use workspace-recipe-run
+  if [ -z "$dry" ]; then
+    route_lock || return 1 # assemble the recipe before any tab moves out
+    feature_use workspace-recipe-run
+  fi
   up_run "$file" "$dry"
-}
+)
 
 # The skill (skills/pitwall/SKILL.md) teaches agents to read the lanes and to ask before acting on one: linked into
 # each agent's skills folder that exists, so it follows pitwall's updates. Something else already there stays.
@@ -1259,6 +1323,11 @@ case ${1:-} in
   _lanes) lanes ;;
   stats) shift; [ "${2:-}" = --plain ] || feature_use lane-stats; cmd_stats "$@" ;;
   features) shift; feature_report "$@" ;;
+  settings) shift; cmd_settings "$@" ;;
+  plan) shift; cmd_plan "$@" ;;
+  _route) shift; cmd_route "$@" ;;
+  _cycle) shift; cycle_workspace "$@" ;;
+  _label) shift; cmd_label "$@" ;;
   quota) shift; cmd_quota "${1:-}" ;;
   saved) cmd_saved ;;
   restore) shift; cmd_restore "$@" ;;
