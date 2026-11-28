@@ -769,7 +769,11 @@ until_screen 'these lanes' && eq "in Usage the search finds sessions, and the to
 until_screen 'transcript disk *[0-9][0-9.]* *[KMG]*i*B'
 esc
 keys Tab
+until_screen 'Settings · find a setting'
+keys Tab
 until_screen 'WAITING FOR YOU' && eq "and tab comes back to the lanes" "$(lanes_shown)" 4
+keys BTab
+until_screen 'Settings · find a setting'
 keys BTab
 until_screen 'SESSIONS'
 keys BTab
@@ -1080,5 +1084,335 @@ short_output=$(show_prefix a1 2>"$PREFIX_STATE/error") || short_status=$?
 eq "show rejects a shared prefix without reading either checkpoint" "$short_status $short_output" "1 "
 eq "a full ID still selects a checkpoint with a shared prefix" \
   "$(show_prefix a1111111111111111111111111111111)" "second checkpoint"
+
+# --- feature preview: opt-in routing, session labels and Planned ---------------------------------------------
+B="tmux -L pitwall-preview-$$"
+$B -f /dev/null new-session -d -s project -n home
+$B set-environment -g XDG_CONFIG_HOME "$XDG_CONFIG_HOME" \; set-environment -g XDG_STATE_HOME "$XDG_STATE_HOME" \; set-environment -g XDG_DATA_HOME "$XDG_DATA_HOME"
+$B set -g @pitwall-quota off
+$B run-shell "'$ROOT/pitwall.tmux'"
+PSOCK=$($B display -p '#{socket_path}')
+preview_cli() { TMUX="$PSOCK,0,0" "$ROOT/bin/pitwall" "$@"; }
+PREVIEW_PANE=$($B new-window -dP -F '#{pane_id}' -t project: -n review-build 'sleep 300')
+PREVIEW_WIN=$($B display -p -t "$PREVIEW_PANE" '#{window_id}')
+preview_hook() {
+  printf '{"session_id":"preview-session","cwd":"%s"}\n' "$ROOT" |
+    TMUX="$PSOCK,0,0" TMUX_PANE="$PREVIEW_PANE" "$ROOT/bin/pitwall-hook" "$1" claude
+}
+preview_ws() { $B display -p -t "$PREVIEW_PANE" '#{session_name}'; }
+until_workspace() {
+  i=0
+  while [ "$(preview_ws)" != "$1" ] && [ "$i" -lt 40 ]; do sleep .1; i=$((i + 1)); done
+}
+preview_hook UserPromptSubmit
+preview_cli up --save project >/dev/null
+preview_cli settings grouping workspace
+eq "the default Idle timeout is 15 minutes" "$(preview_cli settings idle-after)" 900
+preview_cli settings idle-after 0
+eq "the Settings catalogue covers every documented scalar tmux option" "$(awk -F '\t' '
+  NR == FNR { available[$1] = 1; next }
+  /^\| `@pitwall-/ {
+    gsub(/`/, ""); count = split($2, names, " · "); stem = ""
+    for (i = 1; i <= count; i++) {
+      sub(/^ +/, "", names[i]); sub(/ +$/, "", names[i])
+      if (names[i] ~ /^@pitwall-/) { sub(/^@pitwall-/, "", names[i]); stem = names[i]; sub(/-[^-]+$/, "", stem) }
+      else names[i] = stem names[i]
+      if (names[i] == "resume-<agent>") names[i] = "resume-custom"
+      if (!available[names[i]]) print names[i]
+    }
+  }
+' "$ROOT/lib/pitwall-settings.tsv" "$ROOT/README.md")" ''
+$B set -g 'status-format[0]' 'fixture status' \; set -g 'status-format[1]' 'secondary' \; setw -g pane-border-format 'fixture pane'
+preview_cli settings key-dashboard F12
+eq "changing a shortcut replaces the old Pitwall binding" "$($B list-keys -T prefix | awk '$0 ~ /pitwall-dash/ && $4 ~ /^(Space|F12)$/ {print $4}')" 'F12'
+eq "a shortcut cannot take a prefix key already in use" "$(preview_cli settings key-dashboard d >/dev/null 2>&1; echo "$?")" 1
+preview_cli settings key-dashboard Space
+preview_cli settings resume-fixture 'fixture --resume {id}'
+eq "a custom resume template substitutes the session id" "$(preview_cli _resume-cmd fixture saved-id)" 'fixture --resume saved-id'
+preview_cli settings resume-fixture -
+eq "removing a custom command removes its override" "$($B show -gqv @pitwall-resume-fixture)" ''
+preview_cli _route
+eq "Automanaged is off until enabled" "$(preview_ws)" project
+$B new-session -d -s idle -n user-shell
+# A tab routed by the earlier preview keeps its origin when it joins the shared workspace.
+$B new-session -d -s jin-working -n legacy 'sleep 300'
+LEGACY=$($B display -p -t jin-working: '#{pane_id}')
+lane "$LEGACY" working
+$B set -p -t "$LEGACY" @pitwall_session legacy-preview \; set -w -t "$LEGACY" @pitwall_managed_origin jin \
+  \; set -w -t "$LEGACY" @pitwall_managed_index 3 \; set -t jin-working @pitwall_managed_workspace jin
+$B new-session -d -s ui -x 72 -y 24 "env TERM=xterm-256color '$BASH_BIN' '$ROOT/bin/pitwall-dash'"
+until_screen 'Lanes.*Usage.*Settings'
+keys BTab
+until_screen 'Settings · find a setting'
+until_screen 'Status layout  *Inline'
+keys -l 'unknown-preference'
+until_screen 'No matching settings'
+esc
+keys -l 'group'
+until_screen 'Group lanes  *Workspace'
+keys Enter
+until_screen 'Workspace  *Current · Default'
+keys Down
+until_screen 'Workspace → State'
+esc
+until_screen '❯ group'
+eq "cancel preserves the grouping and restores the filtered cursor" "$(screen | grep -c '^▌.*Group lanes .*Workspace') $($B show -gqv @pitwall_dash_group)" '1 workspace'
+keys Enter
+until_screen 'CHOOSE A VALUE'
+keys Down; keys Enter
+until_screen 'Saved · Group lanes · State'
+eq "save persists grouping and updates tmux" "$(cat "$XDG_CONFIG_HOME/pitwall/settings/grouping") $($B show -gqv @pitwall_dash_group)" 'state state'
+esc
+keys -l 'status layout'
+keys Enter; keys Down; keys Enter
+until_screen 'Saved · Status layout · Tabs'
+eq "the saved layout applies immediately" "$($B show -gv status-position)" top
+keys Enter; keys Up; keys Enter
+until_screen 'Saved · Status layout · Inline'
+eq "switching back restores the existing theme" "$($B show -gv 'status-format[0]') $($B show -gv 'status-format[1]') $($B show -gwv pane-border-format)" 'fixture status secondary fixture pane'
+esc
+keys -l 'urgency threshold'
+keys Enter; keys C-u; keys -l 'invalid'; keys Enter
+until_screen 'Could not save this setting'
+keys C-d; keys Home; keys Delete; keys Delete; keys Enter
+until_screen 'Saved · Urgency threshold'
+eq "editing a number moves the caret and accepts zero" "$(preview_cli settings urgent-after)" 0
+preview_cli settings urgent-after 600
+esc
+keys -l 'feature preview'
+until_screen '▌.*Automanaged  *Off'
+keys Enter
+until_screen 'Off  *Current · Default'
+keys Down
+until_screen 'Off → On'
+mkdir "$XDG_CONFIG_HOME/pitwall/settings/automanaged"
+keys Enter
+until_screen 'Could not save this setting'
+eq "a failed save leaves the preview off" "$($B show -gqv @pitwall_automanaged)" ''
+rmdir "$XDG_CONFIG_HOME/pitwall/settings/automanaged"
+keys Enter
+until_screen 'Saved · Automanaged · On'
+eq "the dashboard persists the feature preview setting" "$(cat "$XDG_CONFIG_HOME/pitwall/settings/automanaged")" on
+$B resize-window -t ui -x 150 -y 45
+until_screen '────────────────────────────────────────────────────────────────────────────────'
+keys BTab
+until_screen 'Planned · filter workspaces and handoffs'
+until_screen 'No workspaces queued'
+until_screen 'No handoffs queued'
+until_screen 'It stays here until you choose'
+esc
+until_workspace working
+eq "enabling the preview routes an existing tab without enrollment" "$(preview_ws) $($B display -p -t "$PREVIEW_PANE" '#{window_id}')" "working $PREVIEW_WIN"
+preview_cli _route
+eq "all five Automanaged workspaces exist as soon as preview is enabled" \
+  "$(preview_cli ws _rows | awk -F '\t' '$1 ~ /^(draft|needs-you|pitwall-idle|review|working)$/ {print $1, $3}' | LC_ALL=C sort | paste -sd ' ' -)" \
+  'draft 0 needs-you 0 pitwall-idle 0 review 0 working 2'
+eq "a legacy tab joins the same shared workspace and keeps its origin" "$($B display -p -t "$LEGACY" '#{session_name} #{@pitwall_managed_origin} #{@pitwall_managed_index}')" "working jin 3$($B display -p -t "$LEGACY" '#{window_id}')"
+eq "a routed tab still counts as up for its project's recipe" "$(preview_cli up --list --plain | awk -F '\t' '$1 == "project" { print $3, $4 }')" '1 1'
+WATCH="tmux -L pitwall-preview-client-$$"
+$B select-window -t "$PREVIEW_WIN"
+$WATCH -f /dev/null new-session -d -x 100 -y 25 "unset TMUX; exec $B attach -t working"
+i=0
+while [ -z "$($B list-clients -F '#{client_name}')" ] && [ "$i" -lt 40 ]; do sleep .1; i=$((i + 1)); done
+preview_hook PermissionRequest
+preview_cli _route "$PREVIEW_WIN"
+eq "a visible tab stays put when its agent starts asking" "$(preview_ws) $($B display -p -t "$PREVIEW_PANE" '#{E:@pitwall-state-fmt}')" 'working asking'
+$B switch-client -c "$($B list-clients -F '#{client_name}')" -t project
+until_workspace needs-you
+eq "leaving the tab routes the approval to Needs you" "$(preview_ws)" needs-you
+$WATCH kill-server
+preview_hook Stop
+until_workspace review
+eq "an unread completion routes to Review" "$(preview_ws)" review
+eq "the approval workspace stays reachable after its last agent leaves" \
+  "$($B capture-pane -pt '=needs-you:' | grep -c 'No agent tabs in this workspace yet')" 1
+preview_cli seen "$PREVIEW_WIN"
+until_workspace pitwall-idle
+eq "a name collision leaves the user's workspace untouched and keeps the original home for restore" \
+  "$(preview_ws) $($B list-windows -t '=idle' -F '#{window_name}') $(cut -f4 "$XDG_STATE_HOME/pitwall/lanes/preview-session")" 'pitwall-idle user-shell project'
+
+SECOND_PREVIEW=$($B new-window -dP -F '#{pane_id}' -t project: -n other-build 'sleep 300')
+printf '{"session_id":"second-preview","cwd":"%s"}\n' "$ROOT" |
+  TMUX="$PSOCK,0,0" TMUX_PANE="$SECOND_PREVIEW" "$ROOT/bin/pitwall-hook" UserPromptSubmit claude
+i=0
+while [ "$($B display -p -t "$SECOND_PREVIEW" '#{session_name}')" != working ] && [ "$i" -lt 40 ]; do sleep .1; i=$((i + 1)); done
+eq "new sessions automatically join the shared workspace" "$($B display -p -t "$SECOND_PREVIEW" '#{session_name}')" working
+preview_cli _route
+eq "routed tabs that shared a physical index keep separate restore positions" \
+  "$(preview_cli saved | awk '/review-build|other-build/ && /project:/ {print $2}' | sort -u | wc -l | tr -d ' ')" 2
+RESTORE="tmux -L pitwall-routed-restore-$$"
+$RESTORE -f /dev/null new-session -d -s boot
+$RESTORE set -g @pitwall-resume-claude 'printf "%s\\n" "{id}"'
+RESTORE_SOCK=$($RESTORE display -p '#{socket_path}')
+RESTORE_STATE=$XDG_STATE_HOME/routed-restore
+mkdir -p "$RESTORE_STATE/pitwall/lanes"
+cp "$XDG_STATE_HOME/pitwall/lanes/preview-session" "$XDG_STATE_HOME/pitwall/lanes/second-preview" "$RESTORE_STATE/pitwall/lanes/"
+TMUX="$RESTORE_SOCK,0,0" XDG_STATE_HOME="$RESTORE_STATE" "$ROOT/bin/pitwall" restore >/dev/null
+eq "both routed lanes come back in separate tabs on a new server" \
+  "$($RESTORE list-panes -s -t project: -F '#{window_name} #{@pitwall_session}' | sort | paste -sd ' ' -)" \
+  'other-build second-preview review-build preview-session'
+$RESTORE kill-server
+preview_cli _label add qa "$PREVIEW_PANE:claude:preview-session" "$SECOND_PREVIEW:claude:second-preview" >/dev/null
+keys -l 'label:qa state:idle'
+until_screen '○ review-build'
+until_screen ' qa '
+until_screen 'other-build' absent
+esc
+keys -l 'select label:qa'
+until_screen 'Select matching lanes (2)'
+keys Enter
+until_screen '2 selected'
+keys Right; until_screen 'Add label to 2 lanes'; keys -l l
+keys -l launch; keys Enter
+until_screen 'Label launch added'
+eq "a label action applies to the selected agent sessions" "$(grep -l '^launch$' "$XDG_STATE_HOME/pitwall/labels/"* | wc -l | tr -d ' ')" 2
+keys -l 'label:launch state:working'
+until_screen 'other-build'
+until_screen '○ review-build' absent
+esc
+$B set -p -t "$SECOND_PREVIEW" @pitwall_session replacement
+eq "labels stay with the original session when a pane is reused" "$(preview_cli _lanes | awk -F '\t' '$4 == "other-build" { print $18 }')" ''
+$B set -p -t "$SECOND_PREVIEW" @pitwall_session second-preview
+eq "a resumed agent gets its labels back" "$(preview_cli _lanes | awk -F '\t' '$4 == "other-build" { print $18 }')" 'launch qa'
+mix=$($B split-window -dP -F '#{pane_id}' -t "$PREVIEW_PANE")
+# Even a shell with leftover lane metadata keeps a mixed tab where it is.
+lane "$mix" idle
+$B set -p -t "$mix" @pitwall_session expired-preview
+preview_hook UserPromptSubmit
+preview_cli _route "$PREVIEW_WIN"
+eq "Automanaged leaves a tab with a shell pane alone" "$(preview_ws)" pitwall-idle
+$B kill-pane -t "$mix"
+until_workspace working
+eq "only agent panes remain and the tab routes automatically" "$(preview_ws)" working
+
+mkdir -p "$XDG_CONFIG_HOME/pitwall/up"
+printf 'workspace = "preview-recipe"\n[[tab]]\nname = "readme"\n' >"$XDG_CONFIG_HOME/pitwall/up/preview-recipe.toml"
+keys -l planned; keys Enter
+until_screen 'WORKSPACES TO START'
+until_screen 'Queue a saved workspace'
+keys Enter; until_screen 'SAVED WORKSPACES'; keys -l preview-recipe; keys Enter
+until_screen 'Start preview-recipe'
+eq "a recipe stays queued without opening its workspace" "$(preview_cli plan list) $($B has-session -t '=preview-recipe' 2>/dev/null; echo "$?")" 'preview-recipe 1'
+keys Enter; until_screen 'back to Planned'; keys Enter
+until_screen 'Start preview-recipe' absent
+eq "starting the planned recipe opens it and clears its queue entry" "$($B display -p -t preview-recipe:readme '#{window_name}') $(preview_cli plan list)" 'readme '
+eq "starting a plan keeps the saved recipe" "$(grep -c '^workspace' "$XDG_CONFIG_HOME/pitwall/up/preview-recipe.toml")" 1
+printf 'name = "Recipe with spaces"\nworkspace = "project"\n[[tab]]\nname = "fails-to-open"\nrun = "echo fixture-should-never-run"\n' >"$XDG_CONFIG_HOME/pitwall/up/spaced.toml"
+preview_cli plan add 'Recipe with spaces' >/dev/null
+mkdir -p "$XDG_CONFIG_HOME/tmux-failure"
+cat >"$XDG_CONFIG_HOME/tmux-failure/tmux" <<SH
+#!/bin/sh
+[ "\$1" != new-window ] || exit 1
+exec '$(command -v tmux)' "\$@"
+SH
+chmod +x "$XDG_CONFIG_HOME/tmux-failure/tmux"
+plan_exit=0
+(PATH="$XDG_CONFIG_HOME/tmux-failure:$PATH" preview_cli plan start 'Recipe with spaces') >/dev/null 2>&1 || plan_exit=$?
+eq "a failed window creation preserves the plan and types nothing in the existing pane" \
+  "$plan_exit $(preview_cli plan list) $($B capture-pane -pt project:home | grep -c 'fixture-should-never-run')" '1 Recipe with spaces 0'
+preview_cli plan drop 'Recipe with spaces'
+
+cat >"$XDG_STATE_HOME/native-input.py" <<'PY'
+import os
+import tty
+
+tty.setraw(0)
+
+def draw(text):
+    print("\033[3;1H\033[J› " + text, end="", flush=True)
+
+placeholder = "\033[2mWrite a prompt\033[0m"
+print("› Previously submitted text\033[2;1H  Previous output", end="", flush=True)
+draw(placeholder)
+while key := os.read(0, 1):
+    draw(placeholder if key == b"c" else "Fixture first line\r\n  continuation with the cursor")
+PY
+preview_cli settings idle-after 3
+INPUT=$($B new-window -dP -F '#{pane_id}' -t project: -n native-input "exec python3 '$XDG_STATE_HOME/native-input.py'")
+$B set -p -t "$INPUT" @pitwall_state idle \; set -p -t "$INPUT" @pitwall_session native-input \; set -p -t "$INPUT" @pitwall_harness codex
+input_workspace() { $B display -p -t "$INPUT" '#{session_name}'; }
+preview_cli _route
+eq "a quiet tab waits in Review before the Idle timeout" "$(input_workspace)" review
+i=0
+while [ "$(input_workspace)" != pitwall-idle ] && [ "$i" -lt 65 ]; do sleep .1; i=$((i + 1)); done
+eq "a dim placeholder stays out of Draft and the timer moves the quiet tab to Idle" "$(input_workspace)" pitwall-idle
+$B select-window -t "$INPUT"
+$WATCH -f /dev/null new-session -d -x 100 -y 25 "unset TMUX; exec $B attach -t pitwall-idle"
+i=0
+while [ -z "$($B list-clients -F '#{client_name}')" ] && [ "$i" -lt 40 ]; do sleep .1; i=$((i + 1)); done
+$B send-keys -t "$INPUT" -l d
+sleep .3
+preview_cli _route
+eq "typing a draft leaves a visible tab in place" "$(input_workspace)" pitwall-idle
+$B switch-client -c "$($B list-clients -F '#{client_name}')" -t project
+i=0
+while [ "$(input_workspace)" != draft ] && [ "$i" -lt 40 ]; do sleep .1; i=$((i + 1)); done
+eq "leaving unsent terminal text routes to Draft with the cursor on a continuation line" "$(input_workspace)" draft
+$WATCH kill-server
+preview_cli settings color-draft '#563d7c'
+eq "the configurable colour reaches the Draft badge" "$($B display -p -t "$INPUT" '#{E:@pitwall-glyph}' | grep -c 'bg=#563d7c.*Draft')" 1
+preview_cli settings layout tabs
+preview_cli settings color-working '#ffff00'
+eq "the Tabs layout labels the Draft workspace once" "$($B display -p -t "$INPUT" '#{E:@pitwall-glyph}')" ''
+eq "working uses its configured accent with readable text" \
+  "$($B display -p -t "$INPUT" '#{E:@pitwall-tabs-fmt}' | grep -c 'fg=#000000 bg=#ffff00]working')" 1
+eq "the bar prioritizes Working, Draft, Review and Idle and hides empty Needs you" \
+  "$($B display -p -t "$INPUT" '#{E:@pitwall-tabs-fmt}' | grep -c ']working.*]draft.*]review.*]pitwall-idle') $($B display -p -t "$INPUT" '#{E:@pitwall-tabs-fmt}' | grep -c ']needs-you')" '1 0'
+$B kill-session -t '=ui'
+$B new-session -d -s ui -x 150 -y 45 "env TERM=xterm-256color PITWALL_FROM=$INPUT '$BASH_BIN' '$ROOT/bin/pitwall-dash'"
+until_screen 'DRAFTS'
+draft_row=$(screen | awk '{ sub(/│.*/, "") } /^ +DRAFTS / { section = "drafts" } /native-input/ && section == "drafts" { print; exit }')
+eq "the Drafts heading replaces the repeated row badge" "$(printf '%s\n' "$draft_row" | grep -c '^▌.*native-input .*codex')" 1
+eq "the Drafts row omits repeated draft metadata" "$(printf '%s\n' "$draft_row" | grep -ci draft)" 0
+keys C-f
+until_screen 'lanes by workspace'
+until_screen 'DRAFTS'
+eq "Drafts appear once when grouping by workspace" "$(screen | grep -c '▌.*native-input')" 1
+$B send-keys -t "$INPUT" -l c
+i=0
+while ! $B capture-pane -pt "$INPUT" | grep -q 'Write a prompt' && [ "$i" -lt 30 ]; do sleep .1; i=$((i + 1)); done
+preview_cli _route
+eq "clearing the input returns to Review for the configured quiet period" "$(input_workspace)" review
+eq "Draft stays available with zero agent tabs" "$(preview_cli ws _rows | awk -F '\t' '$1 == "draft" {print $3}')" 0
+$B kill-session -t '=draft'
+i=0
+while [ "$($B display -p -t '=draft:' '#{@pitwall_managed_bucket}' 2>/dev/null)" != draft ] && [ "$i" -lt 40 ]; do sleep .1; i=$((i + 1)); done
+eq "closing an empty managed workspace brings back its slot" "$($B display -p -t '=draft:' '#{@pitwall_managed_bucket}')" draft
+preview_hook PermissionRequest
+until_workspace needs-you
+$WATCH -f /dev/null new-session -d -x 140 -y 25 "unset TMUX; exec $B attach -t needs-you"
+i=0
+while [ -z "$($B list-clients -F '#{client_name}')" ] && [ "$i" -lt 40 ]; do sleep .1; i=$((i + 1)); done
+bar=$($B display -p -c "$($B list-clients -F '#{client_name}')" '#{E:@pitwall-tabs-fmt}')
+eq "Needs you appears first and joins its active tab in the same accent" \
+  "$(printf '%s\n' "$bar" | grep -c ']needs-you#\[bg=#684217\] #\[norange\]#\[range=window|.*revie.*]working.*]draft.*]review.*]pitwall-idle')" 1
+eq "Working stays expanded while Needs you is selected" \
+  "$(printf '%s\n' "$bar" | grep -c ']working.*other.*]draft')" 1
+$WATCH send-keys C-b ')'
+i=0
+while [ "$($B list-clients -F '#{session_name}')" != working ] && [ "$i" -lt 40 ]; do sleep .1; i=$((i + 1)); done
+eq "prefix right parenthesis advances to Working in bar order" "$($B list-clients -F '#{session_name}')" working
+$WATCH send-keys C-b '('
+i=0
+while [ "$($B list-clients -F '#{session_name}')" != needs-you ] && [ "$i" -lt 40 ]; do sleep .1; i=$((i + 1)); done
+eq "prefix left parenthesis returns to Needs you in bar order" "$($B list-clients -F '#{session_name}')" needs-you
+$WATCH kill-server
+
+preview_cli settings grouping state
+i=1
+while [ "$i" -le 18 ]; do
+  quiet=$($B new-window -dP -t project: -F '#{pane_id}' -n "quiet-fixture-$i" 'sleep 300')
+  lane "$quiet" idle
+  i=$((i + 1))
+done
+$B kill-session -t '=ui'
+$B new-session -d -s ui -x 108 -y 22 "env TERM=xterm-256color '$BASH_BIN' '$ROOT/bin/pitwall-dash'"
+until_screen '↓ [1-9][0-9]* more below · type to filter'
+keys NPage
+until_screen '↑ [1-9][0-9]* above'
+keys -l quiet-fixture-18
+until_screen '▌.*quiet-fixture-18'
+until_screen 'more below · type to filter' absent
+$B kill-server
 
 exit $fail

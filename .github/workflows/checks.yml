@@ -19,7 +19,7 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -yq tmux
       - name: Syntax
         run: |
-          for script in pitwall.tmux bin/pitwall bin/pitwall-hook bin/pitwall-tick bin/pitwall-sys lib/pitwall-features.sh test/run.sh; do
+          for script in pitwall.tmux bin/pitwall bin/pitwall-hook bin/pitwall-tick bin/pitwall-sys lib/pitwall-features.sh lib/pitwall-preview.sh lib/pitwall-settings.sh test/run.sh; do
             sh -n "$script" || exit 1
           done
           bash -n bin/pitwall-dash

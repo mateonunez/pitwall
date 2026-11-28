@@ -12,6 +12,10 @@ The words pitwall uses, and only those.
 - **Question**: what an asking lane asks, read off its screen when it starts asking (`Allow pnpm release?`) with its numbered answers; dropped once it moves on.
 - **Urgent**: an `asking` lane that has waited longer than `@pitwall-urgent-after` (ten minutes). Not a state of its own: a mark that clears when the lane moves on.
 - **Workspace**: a tmux session, holding the windows of one project or one kind of work. Moving a lane between workspaces moves its window; its agents keep running.
+- **Automanaged**: the feature preview that automatically moves agent-only windows into shared workspaces according to their most urgent lane.
+- **Label**: a tag on an agent session that can be searched and used to select lanes.
+- **Draft**: unsent input in a recognized agent prompt. Automanaged moves its tab to the Draft workspace after you leave it.
+- **Planned**: the dashboard queue of recipes and handoffs the user has set aside to start or review.
 - **Search**: what you type in the dashboard; every word must appear in a lane, a workspace, an action, a command or a plugin row included in the main search. Words that start an action's name (`rename`, `diff`, `move`) and words that find a lane suggest that action on that lane. With a leading `/`, the text searched in the lanes' recent output.
 - **Selection**: a set of lanes, kept as pane ids so it survives re-sorting. Actions apply to it when it is not empty, else to the lane under the cursor, and say which.
 - **Favorite**: a lane you starred. It stays at the top of Lanes across state changes, workspace moves and dashboard openings.

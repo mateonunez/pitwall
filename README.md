@@ -12,7 +12,7 @@
 
 Hey there! I'm **pitwall**. You run a few coding agents in tmux, and I keep an eye on all of them for you. Your status line tells you which one is working, which one is waiting for you, and which one finished while you were looking somewhere else. One key lists them all; another takes you straight to the one that needs you.
 
-Your agents tell me what they are doing through a hook. I never poll and never read your prompts; I touch the network only through a plugin you add, like OpenTimeline's.
+Your agents tell me what they are doing through a hook. When you enable Automanaged, I check the visible input near the cursor to detect drafts and keep only a draft marker. I touch the network only through a plugin you add, like OpenTimeline's.
 
 > **Status:** pre-1.0, used every day with Claude Code, Codex and Hermes. Things can still change between releases.
 
@@ -122,6 +122,23 @@ Restore already knows how to resume grok, opencode and pi. For any other agent, 
 - **Plugins.** `pitwall plugin add` takes an official plugin by name, a folder of yours, or any GitHub repo. A plugin can bring a dashboard view, a `pitwall` command, a piece of the status line and a reaction to lane events. [OpenTimeline](plugins/opentimeline) is the first: a lane that starts asking shows up in its Needs you, and its stories come back as a dashboard view, each linked to its lane. See [Plugins](#plugins).
 - **Made for agents as well.** `pitwall ls` prints one line per lane with a short ref (`@1 lab/opentimeline asking 3m codex Allow pnpm release --tag v0.2.0?`), `--json` for scripts (with each asking lane's question and choices), `pitwall peek @1` shows a lane's last lines, and `pitwall answer @1 1` / `pitwall send @1 "…"` act on one. `pitwall install --write` also links a skill (`skills/pitwall`) into Claude Code, Codex and Hermes, so an orchestrator reads the fleet, reports who waits on you and what they ask, and acts on a lane only after you say yes.
 
+## Settings
+
+Open **Settings** from Lanes with `Shift-Tab`, or type `settings` and press Enter. Type to filter by preference, section, or tmux option name. Use the arrows or `ctrl-n` and `ctrl-e` to move. Enter opens the selected preference and shows its current and default values. Enter saves any change and Esc returns to the list with your filter and focus intact. In text fields, use `ctrl-u` to clear and `ctrl-d` to insert the default.
+
+Settings covers lane grouping, appearance, notifications, provider and machine usage, local feature counts, model prices, agent discovery and resume commands, workspace recipe auto-save, prefix keys and Feature Preview. Model prices open your local editor. Settings saves overrides in `$XDG_CONFIG_HOME/pitwall/settings`, defaulting to `~/.config/pitwall/settings`. `pitwall settings` lists the scalar preferences, and `pitwall settings layout tabs` saves one from the CLI.
+
+### Feature Preview · Automanaged
+
+Turn on **Automanaged** in Settings to sort agent tabs, including ones opened later. Pitwall creates **working**, **needs-you**, **review**, **draft** and **idle** right away and keeps them available when empty. The most urgent lane sets the destination for its whole tab. Quiet tabs move through Review and reach Idle after 15 minutes without activity. Change **Idle timeout (seconds)** in Feature Preview. Enter 0 to move quiet tabs immediately. Unread completions stay in Review until you visit them.
+
+The tab you are using moves after you leave it. Tabs with a shell pane or links to several workspaces stay in place. The project's recipe and restore records keep their workspace of origin. After a tmux restart, restored agent tabs are sorted again while the preview is on. Turning the preview off pauses routing and keeps tabs where they are.
+
+- **Labels** appear as chips. In a lane's actions, `l` adds a label and `L` removes one. Labels follow the agent session across moves and restores. Type `label:qa state:asking` to filter lanes or `select label:qa` to mark all matches. Label actions apply to the selection when it exists.
+- **Draft** holds quiet tabs with unsent input in a recognized Codex, Claude Code or Hermes prompt. Type normally in the agent. When you leave the tab, Pitwall checks the visible prompt near its cursor and stores only a marker. The draft stays in the agent. Find it under **Drafts** in the dashboard or search `draft`.
+- **Workspace tabs.** The Tabs layout puts Needs you first when it has a pending request, followed by Working, Draft, Review and Idle. Working keeps its tabs visible while you visit other workspaces. The stock `prefix (` and `prefix )` shortcuts follow the same order in Automanaged. Find an empty Needs you by typing its name in Lanes. Each workspace has an accent on its pill, window underlines and active tab. Set each colour in **Settings → Appearance**. **Draft colour** also colours the Drafts section and badges in the dashboard.
+- **Planned** is a queue you work through when you are ready. **Queue a saved workspace** opens a searchable list of recipes saved with `pitwall up --save`. Choose **Start** to open its tabs through the usual `pitwall up` checks. Press `→` on a queued workspace to remove it from the queue. To queue a handoff, press `q` in its recipient review. Planned and the recipient's Inbox both show it until you send or dismiss it.
+
 ## A workspace from a small file
 
 `pitwall up` brings a project back in one command: its tabs, agents, dev servers and nvim. Put a `.pitwall.toml` in the repo, or a `<name>.toml` in `~/.config/pitwall/up/`:
@@ -179,6 +196,8 @@ The numbers are read every few seconds, only while you are attached, in about 80
 ## In the dashboard
 
 It works like a command palette: you type, it finds. Each lane shows what its agent is on, and the preview on the right adds its branch and changes, how full its context is, and what a plugin's view links to it (OpenTimeline's stories).
+
+When results continue offscreen, the line above the shortcuts shows how many are above or below. Scroll with Page Up and Page Down or type to filter the full list.
 
 | Key | Does |
 | --- | --- |
@@ -262,7 +281,7 @@ The logs contain feature IDs only and stay on this machine in `$XDG_STATE_HOME/p
 
 ## Options
 
-Set them in your tmux config before the plugin line.
+Set these in your tmux config before the plugin line. Preferences saved in Settings take precedence on startup.
 
 | Option | Default | Does |
 | --- | --- | --- |
@@ -273,6 +292,12 @@ Set them in your tmux config before the plugin line.
 | `@pitwall-quota` | `on` | Usage limits in the status line |
 | `@pitwall-codexbar` | the CLI inside CodexBar.app | Path to `CodexBarCLI` |
 | `@pitwall-urgent-after` | `600` | Seconds of asking before a lane turns red; `0` turns it off |
+| `@pitwall-idle-after` | `900` | Seconds of inactivity before a quiet tab moves to Idle in Automanaged |
+| `@pitwall-color-draft` | `#1e3a5f` | Background of the Draft badge and workspace tab |
+| `@pitwall-color-working` | `#1c4d42` | Working workspace accent |
+| `@pitwall-color-needs-you` | `#684217` | Needs you workspace accent |
+| `@pitwall-color-review` | `#493762` | Review workspace accent |
+| `@pitwall-color-idle` | `#363e4a` | Idle workspace accent |
 | `@pitwall-toast` | `on` | A short message when a lane starts asking (with its question) or finishes |
 | `@pitwall-rename` | `on` | Name agent windows after their folder |
 | `@pitwall-up-autosave` | `on` | Keep recipes written by `pitwall up --save` current as their workspace changes |

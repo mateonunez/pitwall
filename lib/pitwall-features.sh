@@ -4,6 +4,7 @@ FEATURE_CATALOG='answer branch-diff close-lane copy-resume dashboard diff favori
 
 feature_use() (
   [ "${PITWALL_FEATURE_USAGE:-on}" != off ] || return 0
+  [ -z "${TMUX:-}" ] || [ "$(tmux show -gqv @pitwall-feature-usage 2>/dev/null)" != off ] || return 0
   case $1 in '' | -* | *[!a-z0-9-]*) return 0 ;; esac
   if [ "$#" -eq 2 ]; then
     [ "${#1}" -le 64 ] || return 0

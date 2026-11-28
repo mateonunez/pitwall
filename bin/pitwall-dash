@@ -8,7 +8,7 @@
 # With the search empty it shows who waits for you, then every lane by workspace.
 #
 # Views, tab forward and shift-tab back: Lanes, one for each plugin that brings a view, and
-# Usage. A plugin's view is what its `view` command prints, read in the background; see docs/plugins.md.
+# Usage, Planned and Settings. A plugin's view is what its `view` command prints, read in the background.
 # With the search empty, 1 2 3 answer the lane under the cursor when it asks, and space reads its whole output.
 #
 # Selection follows lanes, not rows (marks are pane ids), and an action always names what it applies to.
@@ -24,13 +24,20 @@ E=$'\033'
 US=$'\037' # rows are read on this separator: a tab is whitespace to `read`, so empty fields would collapse
 AMBER="${E}[38;2;245;158;11m" GREEN="${E}[38;2;0;199;88m" RED="${E}[38;2;251;44;54m" BLUE="${E}[38;2;48;128;255m"
 TEXT="${E}[38;2;229;231;235m" MUTED="${E}[38;2;156;163;175m" DIM="${E}[38;2;107;114;128m" LINE="${E}[38;2;38;38;38m"
+DRAFT_BG="${E}[48;2;30;58;95m" DRAFT_FG="${E}[38;2;248;250;252m"
 SELBG="${E}[48;2;31;31;31m" CHIP="${E}[48;2;42;42;42m" BOLD="${E}[1m" R="${E}[0m" EOL="${E}[K"
 SPIN=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/pitwall-dash.XXXXXX")
 NEW4=0; ((BASH_VERSINFO[0] >= 4)) && NEW4=1
 
 tick=0 cols=80 lines=24 now=0 dirty=1 load_pid='' quota_data='' sys_hist='' u_sample='' u_pid='' u_status='' u_next=0 u_day='' sig='' psig='' metrics='' metrics_for='' stats_pid='' stats_due=0 quota=''
-L_fav=() L_pending=() L_state=() L_session=() L_window=() L_id=() L_since=() L_harness=() L_task=() L_transcript=() L_sid=() L_urgent=() L_dir=() L_q=() L_ch=()
+L_fav=() L_pending=() L_state=() L_session=() L_window=() L_id=() L_since=() L_harness=() L_task=() L_transcript=() L_sid=() L_urgent=() L_dir=() L_q=() L_ch=() L_labels=() L_managed=() L_draft=()
+AUTO=off planned=() plan_recipes=() plan_query='' editing_setting='' setting_draft='' edit_pos=0 settings_ready=0 profile_value='' setting_origin=''
+K_id=() K_kind=() K_default=() K_group=() K_title=() K_help=() K_live=()
+while IFS=$'\t' read -r _key _kind _def _group _title _help; do
+  K_id+=("$_key") K_kind+=("$_kind") K_default+=("$_def") K_group+=("$_group") K_title+=("$_title") K_help+=("$_help") K_live+=('')
+done <"${PITWALL%/*}/../lib/pitwall-settings.tsv"
+PRICE_FILE=${XDG_CONFIG_HOME:-$HOME/.config}/pitwall/prices
 WS=() restorable=0
 S_id=() S_name=() S_dir=() S_harness=() S_at=() saved_pid='' saved_ready=0 saved_git='' saved_git_id=''
 H_id=() H_name=() handoff_id='' handoff_text='' handoff_snapshot='' handoff_source='' handoff_query='' handoff_cursor='' handoff_pane='' handoff_queued=0
@@ -63,7 +70,7 @@ if [ -f "$PINDEX" ]; then
     VIEW_LIST+=("p${#PV_name[@]}") PV_id+=("$_id") PV_name+=("$_v") PV_run+=("$_r") PV_pid+=('') PV_next+=(0) PV_got+=(0)
   done <"$PINDEX"
 fi
-VIEW_LIST+=(usage)
+VIEW_LIST+=(usage planned settings)
 detail=${#PV_name[@]} detail_key='' detail_from='' detail_query='' detail_row=''
 resume_run='' resume_owner='' resume_page='' resume_parent='' resume_parent_query='' resume_item='' resume_query=''
 resume_selection='' meter_running=0
@@ -84,6 +91,11 @@ here_ws() { tmux display -p ${from:+-t "$from"} '#{session_name}' 2>/dev/null; }
 tilde() { td=${1/#$HOME/\~}; }
 words() { nw=$#; }
 fill() { printf -v fl '%*s' "$1" ''; fl=${fl// /$2}; } # fill <n> <char> → $fl (GNU tr cannot repeat a multibyte ─)
+
+draft_colour() {
+  [[ $1 =~ ^#[a-fA-F0-9]{6}$ ]] || return 1
+  printf -v draft_sgr '%s[%s;2;%d;%d;%dm' "$E" "$2" "$((16#${1:1:2}))" "$((16#${1:3:2}))" "$((16#${1:5:2}))"
+}
 
 tf() { # tf <format> <epoch> → $tfo
   if ((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 2))); then printf -v tfo "%($1)T" "$2"
@@ -118,6 +130,23 @@ matches() {
   ((hit))
 }
 
+lane_matches() {
+  local i=$1 w hit=1 tokens=()
+  local hay="${L_window[$1]} ${L_session[$1]} ${L_task[$1]} ${L_harness[$1]} ${L_state[$1]} ${L_q[$1]} ${L_labels[$1]}"
+  read -r -a tokens <<<"$query"
+  shopt -s nocasematch
+  for w in "${tokens[@]}"; do
+    case $w in
+      draft) [ -n "${L_draft[i]}" ] ;;
+      label:*) [[ " ${L_labels[i]} " == *" ${w#label:} "* ]] ;;
+      state:*) [[ ${L_state[i]} == "${w#state:}" ]] ;;
+      *) [[ $hay == *"$w"* ]] ;;
+    esac || { hit=0; break; }
+  done
+  shopt -u nocasematch
+  ((hit))
+}
+
 # --- data ---------------------------------------------------------------------------------------------------
 
 # What tmux knows, written to files: lanes, workspaces and pitwall's options. The periodic reload runs it in the
@@ -127,7 +156,13 @@ fetch() {
   tmux list-sessions -F '#{session_name}' >"$TMP/ws.new" 2>/dev/null
   # one line each: tmux 3.4 escapes control characters in display's output, so no separator inside a line
   tmux display -p '#{@pitwall_quota_plain}' \; display -p '#{@pitwall_restorable}' \; display -p '#{@pitwall_last_move}' \
-    \; display -p '#{@pitwall_quota_data}' \; display -p '#{@pitwall_sys_hist}' >"$TMP/opts.new" 2>/dev/null
+    \; display -p '#{@pitwall_quota_data}' \; display -p '#{@pitwall_sys_hist}' \
+    \; display -p '#{@pitwall_automanaged}' \; display -p '#{@pitwall_dash_group}' \
+    \; display -p '#{@pitwall_draft_bg}' \; display -p '#{@pitwall_draft_fg}' >"$TMP/opts.new" 2>/dev/null
+  if [ "$view" = settings ]; then
+    "$PITWALL" settings _values >"$TMP/settings.new" && mv -f "$TMP/settings.new" "$TMP/settings"
+  fi
+  if [ "$AUTO" = on ]; then "$PITWALL" plan list >>"$TMP/opts.new"; fi
   mv -f "$TMP/lanes.new" "$TMP/lanes"; mv -f "$TMP/ws.new" "$TMP/ws"; mv -f "$TMP/opts.new" "$TMP/opts"
 }
 load() { fetch; parse; } # at once, after an action
@@ -141,22 +176,23 @@ load_poll() {
 # Lanes, split once here (never while drawing). Marks on lanes that are gone are dropped, and the dashboard says so.
 # The list is rebuilt (and redrawn) only when something on it changed.
 parse() {
-  local rank state session window id since harness task transcript sid urgent dir q ch fav offer cursor_id='' cursor_kind='' new='' seen=$US kept='|' gone=0 m rest
+  local rank state session window id since harness task transcript sid urgent dir q ch fav offer managed labels draft group draft_bg draft_fg cursor_id='' cursor_kind='' new='' seen=$US kept='|' gone=0 m rest
   if [ "$mode" = browse ] && [[ $cur_sig == lane:* ]]; then
     cursor_kind=lane
   elif [ "$mode" = handoff ] && [[ $cur_sig == dest:* ]]; then
     cursor_kind=dest
   fi
   [ -z "$cursor_kind" ] || { cursor_id=${L_id[${cur_sig#*:}]} cur_sig=''; }
-  L_fav=() L_pending=() L_state=() L_session=() L_window=() L_id=() L_since=() L_harness=() L_task=() L_transcript=() L_sid=() L_urgent=() L_dir=() L_q=() L_ch=() WS=()
-  while IFS="$US" read -r rank state session window id since harness task transcript sid urgent dir q ch fav offer; do
+  L_fav=() L_pending=() L_state=() L_session=() L_window=() L_id=() L_since=() L_harness=() L_task=() L_transcript=() L_sid=() L_urgent=() L_dir=() L_q=() L_ch=() L_labels=() L_managed=() L_draft=() WS=()
+  while IFS="$US" read -r rank state session window id since harness task transcript sid urgent dir q ch fav offer managed labels draft; do
     [ "$id" = "$cursor_id" ] && cur_sig="$cursor_kind:${#L_id[@]}"
     [ "$fav" = 1 ] || fav=0
     L_fav+=("$fav")
     L_pending+=("${offer#-}")
     L_urgent+=("$urgent") L_state+=("$state") L_session+=("$session") L_window+=("$window") L_id+=("$id") L_since+=("$since")
     L_harness+=("$harness") L_task+=("$task") L_transcript+=("$transcript") L_sid+=("$sid") L_dir+=("$dir") L_q+=("$q") L_ch+=("$ch")
-    new+="$state$id$since$task$urgent$session$window$dir$q$ch$fav$offer|"
+    L_labels+=("$labels") L_managed+=("$managed") L_draft+=("${draft#-}")
+    new+="$state$id$since$task$urgent$session$window$dir$q$ch$fav$offer$managed$labels$draft|"
   done <"$TMP/lanes"
   while IFS= read -r m; do case $seen in *"$US$m$US"*) ;; *) seen+="$m$US" WS+=("$m") ;; esac; done <"$TMP/ws"
   rest=${marks#|}
@@ -165,10 +201,29 @@ parse() {
     case "$US${L_id[*]-}$US" in *[[:space:]$US]"$m"[[:space:]$US]*) kept+="$m|" ;; *) gone=$((gone + 1)) ;; esac
   done
   if ((gone)); then marks=$kept notice="$gone selected lane$( ((gone > 1)) && echo s) closed, dropped from the selection"; fi
-  { IFS= read -r quota; IFS= read -r restorable; IFS= read -r last_move; IFS= read -r quota_data; IFS= read -r sys_hist; } <"$TMP/opts"
+  planned=()
+  {
+    IFS= read -r quota; IFS= read -r restorable; IFS= read -r last_move; IFS= read -r quota_data; IFS= read -r sys_hist
+    IFS= read -r AUTO; AUTO=${AUTO:-off}
+    IFS= read -r group; GROUP=${group:-workspace}
+    IFS= read -r draft_bg; IFS= read -r draft_fg
+    draft_colour "$draft_bg" 48 && DRAFT_BG=$draft_sgr
+    draft_colour "$draft_fg" 38 && DRAFT_FG=$draft_sgr
+    while IFS= read -r m; do planned+=("$m"); done
+  } <"$TMP/opts"
+  if [ "$view" = settings ] && [ -f "$TMP/settings" ]; then
+    local ki
+    for ((ki = 0; ki < ${#K_id[@]}; ki++)); do
+      case ${K_kind[ki]} in file | profile) continue ;; esac
+      IFS= read -r m || break
+      K_live[ki]=${m//[[:cntrl:]]/}
+    done <"$TMP/settings"
+    settings_ready=1
+    new+="${K_live[*]}"
+  fi
   case $restorable in '' | *[!0-9]*) restorable=0 ;; esac
   clock
-  new+="$quota$restorable$last_move$marks${WS[*]-}$((now / 60))$view$quota_data$sys_hist" # ages move by the minute
+  new+="$quota$restorable$last_move$marks${WS[*]-}$((now / 60))$view$quota_data$sys_hist$AUTO$GROUP$draft_bg$draft_fg${planned[*]-}" # ages move by the minute
   [ "$new" != "$sig" ] && sig=$new && build
 }
 
@@ -520,15 +575,20 @@ linked() { # linked <row> <lane>
 neighbor_view() { # neighbor_view <1|-1> → $nv and its name in lower case, $nvl
   local current=$view; [ "$view" = "p$detail" ] && current=$detail_tab
   case $view in restore | inbox | handoffs) current=lanes ;; esac
-  local i count=${#VIEW_LIST[@]}
-  for ((i = 0; i < count; i++)); do [ "${VIEW_LIST[i]}" = "$current" ] && break; done
-  nv=${VIEW_LIST[(i + count + $1) % count]}
-  case $nv in lanes | usage) nvl=$nv ;; *) lower "${PV_name[${nv#p}]}"; nvl=$lo ;; esac
+  local i v count views=()
+  for v in "${VIEW_LIST[@]}"; do [ "$v:$AUTO" != planned:off ] && views+=("$v"); done
+  count=${#views[@]}
+  for ((i = 0; i < count; i++)); do [ "${views[i]}" = "$current" ] && break; done
+  nv=${views[(i + count + $1) % count]}
+  case $nv in
+    lanes | usage | planned | settings) nvl=$nv ;;
+    *) lower "${PV_name[${nv#p}]}"; nvl=$lo ;;
+  esac
 }
 
 # The list for the current mode and search. The cursor stays on what it pointed at.
 item() { I_kind+=("$1") I_ref+=("$2") I_text+=("${3-}") I_key+=("${4-}"); }
-section() { ((${#I_kind[@]})) && item head '' ''; item head '' "$1"; } # a blank row before each but the first
+section() { ((${#I_kind[@]})) && item head '' ''; item head '' "$1" "${2:-}"; } # a blank row before each but the first
 
 rank_of() { # rank_of <lane> → $rk: urgent, asking, done, working, idle, gone
   case ${L_state[$1]} in asking) rk=1 ;; done) rk=2 ;; working) rk=3 ;; idle) rk=4 ;; *) rk=5 ;; esac
@@ -559,6 +619,12 @@ lane_actions() { # lane_actions <lane> [selection count]: the ones you reach for
   item act "pr@$1" "Open the branch's PR" p
   item act "move@$1" "Move $what to a workspace…" m
   item act "follow@$1" "Move $what and go there…" M
+  if [ "$AUTO" = on ]; then
+    if [ -n "${L_sid[$1]}" ] || ((n)); then
+      item act "label-add@$1" "Add label to ${what}…" l
+      item act "label-remove@$1" "Remove label from ${what}…" L
+    fi
+  fi
   if ((n)); then item act "rename@$1" "Rename $tb: a prefix…" r; else item act "rename@$1" 'Rename tab…' r; fi
   if marked "${L_id[$1]}"; then item act "select@$1" 'Unselect' v; else item act "select@$1" 'Select' v; fi
   item act "new@lane:$1" 'New lane here: claude · codex · hermes…' a
@@ -699,11 +765,18 @@ suggest() { # suggest → items: the actions the search names, on the lanes (or 
         continue
         ;;
       esac
+      case $rest in *label:* | *state:*)
+        query=$rest k=0
+        for ((i = 0; i < ${#L_id[@]}; i++)); do lane_matches "$i" && k=$((k + 1)); done
+        query=$all
+        if ((k)); then ((total++)) || section 'SUGGESTED'; item cmd "selquery@${rest% }" "Select matching lanes ($k)" ''; fi
+        continue ;;
+      esac
     fi
     n=0
     if [ -n "$rest" ]; then
       query=$rest # matches() reads $query; put back below
-      for i in $(sorted $(for ((i = 0; i < ${#L_id[@]}; i++)); do matches "${L_window[i]} ${L_session[i]} ${L_task[i]} ${L_harness[i]}" && echo "$i"; done)); do
+      for i in $(sorted $(for ((i = 0; i < ${#L_id[@]}; i++)); do lane_matches "$i" && echo "$i"; done)); do
         ((n < 3 && total < 8)) || break
         ((total++)) || section 'SUGGESTED'
         case $code in worktree) item act "worktree@lane:$i" "$label · ${L_window[i]}" ;; *) item act "$code@$i" "$label · ${L_window[i]}" ;; esac
@@ -741,7 +814,7 @@ recipes() { # «up»: the workspace recipes pitwall up knows, how much of each i
 
 named_anything() { # does the search, as typed, find a lane or a workspace by itself?
   local i ws
-  for ((i = 0; i < ${#L_id[@]}; i++)); do matches "${L_window[i]} ${L_session[i]} ${L_task[i]} ${L_harness[i]} ${L_state[i]}" && return 0; done
+  for ((i = 0; i < ${#L_id[@]}; i++)); do lane_matches "$i" && return 0; done
   for ws in ${WS[@]+"${WS[@]}"}; do matches "$ws" && return 0; done
   return 1
 }
@@ -875,7 +948,7 @@ usage() {
 }
 
 lane_item() { # a lane, and what its agent is on (not a shell's user@host title)
-  item lane "$1"
+  item lane "$1" '' "${2:-}"
   [ "${L_state[$1]}" = asking ] && [ -n "${L_q[$1]-}" ] && { item task "$1"; return; } # what it asks, while it asks
   case ${L_task[$1]} in '' | *@*:* | "${HOSTNAME%%.*}"*) ;; *) item task "$1" ;; esac
 }
@@ -951,6 +1024,40 @@ inbox_build() {
       item queued "${L_id[i]}" "${L_session[i]}/${L_window[i]}" "$i"
     done
   fi
+
+}
+
+planned_build() {
+  local i recipe
+  section 'WORKSPACES TO START'
+  item cmd planadd 'Queue a saved workspace…' ''
+  for recipe in "${planned[@]}"; do
+    matches "$recipe" && item cmd "planstart@$recipe" "Start $recipe" ''
+  done
+  if ((${#I_kind[@]} == 2)); then
+    if [ -n "$query" ]; then item info '' '  No matching workspaces'
+    else item info '' '  No workspaces queued'; fi
+  fi
+  section 'HANDOFFS TO SEND'
+  for ((i = 0; i < ${#L_id[@]}; i++)); do
+    [ -n "${L_pending[i]}" ] && lane_matches "$i" && item queued "${L_id[i]}" "${L_session[i]}/${L_window[i]}" "$i"
+  done
+  if [ "${I_kind[${#I_kind[@]}-1]}" != queued ]; then
+    if [ -n "$query" ]; then item info '' '  No matching handoffs'
+    else item info '' '  No handoffs queued'; fi
+  fi
+}
+
+plan_picker() {
+  local recipe
+  section 'SAVED WORKSPACES'
+  for recipe in "${plan_recipes[@]}"; do
+    matches "$recipe" && item cmd "planqueue@$recipe" "$recipe" ''
+  done
+  if ((${#I_kind[@]} == 1)); then
+    if [ -n "$query" ]; then item info '' '  No matching workspaces'
+    else item info '' '  No saved workspaces'; fi
+  fi
 }
 
 handoff_results() {
@@ -960,6 +1067,47 @@ handoff_results() {
     if ((!added)); then section 'SAVED HANDOFFS'; added=1; fi
     item handoff "${H_id[i]}" "${H_name[i]}"
   done
+}
+
+setting_info() { # the selected catalogue entry, or a named custom resume command
+  local i
+  setting_title="Resume ${1#resume-}" setting_kind=resume setting_current=$profile_value setting_default=- setting_help='Include {id} where the saved session ID belongs. Clear the field to remove the custom command.'
+  for ((i = 0; i < ${#K_id[@]}; i++)); do
+    [ "${K_id[i]}" = "$1" ] || continue
+    setting_title=${K_title[i]} setting_kind=${K_kind[i]} setting_default=${K_default[i]} setting_help=${K_help[i]}
+    setting_current=${K_live[i]:-$setting_default}
+    case $1 in grouping) setting_current=$GROUP ;; automanaged) setting_current=$AUTO ;; esac
+    return
+  done
+}
+
+setting_label() {
+  case $1 in
+    workspace) setting_caption=Workspace ;; state) setting_caption=State ;;
+    off) setting_caption=Off ;; on) setting_caption=On ;;
+    inline) setting_caption=Inline ;; tabs) setting_caption=Tabs ;;
+    -) setting_caption='None' ;;
+    *) setting_caption=$1 ;;
+  esac
+}
+
+settings_rows() {
+  local i group=''
+  if ((!settings_ready)); then item info '' '  Reading settings…'; return; fi
+  for ((i = 0; i < ${#K_id[@]}; i++)); do
+    matches "${K_title[i]} ${K_group[i]} @pitwall-${K_id[i]} ${K_help[i]}" || continue
+    if [ "$group" != "${K_group[i]}" ]; then
+      group=${K_group[i]}; section "$group"
+    fi
+    case ${K_id[i]} in grouping) setting_caption=$GROUP ;; automanaged) setting_caption=$AUTO ;; *) setting_caption=${K_live[i]:-${K_default[i]}} ;; esac
+    case ${K_kind[i]} in
+      profile) setting_caption='Choose agent' ;;
+      file) if [ -f "$PRICE_FILE" ]; then setting_caption=Custom; else setting_caption=Built-in; fi ;;
+      *,*) setting_label "$setting_caption" ;;
+    esac
+    item setting "${K_id[i]}" "${K_title[i]}" "$setting_caption"
+  done
+  ((${#I_kind[@]})) || item info '' '  No matching settings'
 }
 
 build() {
@@ -986,16 +1134,23 @@ build() {
           else item info '' '  No matching handoffs'; fi
         fi
       elif [ "$view" = inbox ]; then inbox_build
+      elif [ "$view" = settings ]; then settings_rows
+      elif [ "$view" = planned ]; then planned_build
       elif [ "$view" = usage ]; then usage
       elif [ "${view:0:1}" = p ]; then pv_build "${view#p}"
       elif [ -z "$query" ]; then
-        local favorites=() waiting=() others=() rest=() st
+        local favorites=() waiting=() drafts=() others=() rest=() st
         for ((i = 0; i < ${#L_id[@]}; i++)); do
           if ((L_fav[i])); then favorites+=("$i")
+          elif [ -n "${L_draft[i]}" ]; then drafts+=("$i")
           else case ${L_state[i]} in asking | done) waiting+=("$i") ;; *) others+=("$i") ;; esac; fi
         done
         if ((${#favorites[@]})); then section 'FAVORITES'; for i in $(sorted "${favorites[@]}"); do lane_item "$i"; done; fi
         if ((${#waiting[@]})); then section 'WAITING FOR YOU'; for i in $(sorted "${waiting[@]}"); do lane_item "$i"; done; fi
+        if ((${#drafts[@]})); then
+          section 'DRAFTS' draft
+          for i in $(sorted "${drafts[@]}"); do lane_item "$i" draft; done
+        fi
         [ "$GROUP" = state ] && for st in working idle gone; do # by state: what works, what rests, what has gone
           rest=()
           for i in "${others[@]}"; do [ "${L_state[i]}" = "$st" ] && rest+=("$i"); done
@@ -1016,6 +1171,8 @@ build() {
         section 'COMMANDS'
         item cmd inbox 'Open Inbox' ''
         item cmd handoffs 'Open saved handoffs' ''
+        [ "$AUTO" != on ] || item cmd planned 'Open Planned' ''
+        item cmd settings 'Open Settings' ''
         item cmd newws 'New workspace…' c
         # shellcheck disable=SC2086 # one word per moved tab
         [ -n "$last_move" ] && words $last_move && item cmd undo "Undo the last move ($nw tab$( ((nw > 1)) && echo s) back)" u
@@ -1032,10 +1189,12 @@ build() {
         lower "$query"
         [ "$lo" = inbox ] && item cmd inbox 'Open Inbox' ''
         [ "$lo" = handoffs ] && item cmd handoffs 'Open saved handoffs' ''
+        [ "$AUTO:$lo" != on:planned ] || item cmd planned 'Open Planned' ''
+        case $lo in config | settings) item cmd settings 'Open Settings' '' ;; esac
         if [ "${query%% *}" = up ]; then recipes; fi
         suggest
         for ((i = 0; i < ${#L_id[@]}; i++)); do
-          matches "${L_window[i]} ${L_session[i]} ${L_task[i]} ${L_harness[i]} ${L_state[i]} ${L_q[i]-}" && shown+="$i "
+          lane_matches "$i" && shown+="$i "
         done
         if [ -n "$shown" ]; then
           section 'LANES'
@@ -1062,11 +1221,29 @@ build() {
         matches 'keys help every' && item cmd help 'Every key' '?'
       fi
       ;;
+    planpick) plan_picker ;;
+    setting)
+      setting_info "$editing_setting"
+      section 'CHOOSE A VALUE'
+      for w in "${setting_kind%,*}" "${setting_kind#*,}"; do
+        setting_label "$w"
+        hay=''
+        [ "$w" != "$setting_current" ] || hay=Current
+        [ "$w" != "$setting_default" ] || hay="${hay:+$hay · }Default"
+        item choice "$w" "$setting_caption" "$hay"
+      done
+      ;;
+    setting-text | setting-profile)
+      section 'EDIT VALUE'
+      item info '' '  Ctrl-U clears the field'
+      [ "$mode" != setting-text ] || item info '' '  Ctrl-D inserts the default'
+      ;;
     actions)
       case $target in
         lane:*) i=${target#lane:}; upper "${L_window[i]}"; section "ACTIONS ON $u"; lane_actions "$i" "$(mark_count)" ;;
         ws:*) upper "${target#ws:}"; section "ACTIONS ON $u"; ws_actions "${target#ws:}" ;;
         prow:*) i=${target#prow:}; upper "${PV_unit[${P_v[i]}]:-item}"; section "ACTIONS ON THE $u"; row_actions "$i" ;;
+        planned:*) w=${target#planned:}; section 'PLANNED RECIPE'; item cmd "planstart@$w" "Start $w" '⏎'; item cmd "plandrop@$w" "Remove $w from Planned" x ;;
       esac
       ;;
     move)
@@ -1243,7 +1420,14 @@ row() { # row <item> <width> → $line (and $plain, its length on screen)
   local k=${I_kind[$1]} ref=${I_ref[$1]} w=$2 meta='' cmeta='' lane_name n t=${I_text[$1]:0:$(($2 - 10))} st='' stc=''
   line='' plain=0
   case $k in
-    head) upper "${I_text[$1]}"; line="  ${DIM}${u}${R}"; plain=$((2 + ${#u})) ;;
+    head)
+      u=${I_text[$1]}
+      plain=$((2 + ${#u}))
+      if [ "${I_key[$1]}" = draft ]; then
+        line="  ${DRAFT_BG}${DRAFT_FG}${BOLD} ${u} ${R}"; plain=$((plain + 2))
+      elif [ "$view" = settings ]; then line="  ${BOLD}${MUTED}${u}${R}"
+      else upper "$u"; line="  ${DIM}${u}${R}"; plain=$((2 + ${#u})); fi
+      ;;
     lane | dest)
       style "${L_state[ref]}" "${L_urgent[ref]}"
       age "${L_since[ref]}"
@@ -1265,7 +1449,15 @@ row() { # row <item> <width> → $line (and $plain, its length on screen)
       else
         meta="${L_session[ref]} · ${L_harness[ref]:-—}${a:+ · ${a}}"
       fi
-      n=$((w - ${#meta} - 7 - 2 * L_fav[ref]))
+      local draft_text='' draft_width=0
+      if [ "${I_key[$1]}" = draft ]; then
+        glyph=' '
+        if [ "${L_draft[ref]}" = workspace ]; then meta="${L_harness[ref]:-—}${a:+ · ${a}}"; fi
+      elif [ "${L_draft[ref]}" = pane ]; then
+        draft_text=Draft
+      fi
+      [ -z "$draft_text" ] || draft_width=$((${#draft_text} + 3))
+      n=$((w - ${#meta} - 7 - 2 * L_fav[ref] - draft_width))
       ((n < 8)) && n=8
       lane_name=${L_window[ref]:0:$n}
       hl "$lane_name"
@@ -1273,6 +1465,16 @@ row() { # row <item> <width> → $line (and $plain, its length on screen)
       line+="${R} ${colour}${glyph}${R} ${TEXT}${hlo}${R}"
       ((L_fav[ref])) && line+=" ${AMBER}★${R}"
       plain=$((4 + ${#lane_name} + 2 * L_fav[ref]))
+      if [ -n "$draft_text" ]; then
+        line+=" ${DRAFT_BG}${DRAFT_FG}${BOLD} ${draft_text} ${R}"
+        plain=$((plain + draft_width))
+      fi
+      if [ "$AUTO" = on ]; then
+        for t in ${L_labels[ref]}; do
+          ((plain + ${#meta} + ${#t} + 5 < w)) || break
+          line+=" ${CHIP}${TEXT} $t ${R}"; plain=$((plain + ${#t} + 3))
+        done
+      fi
       ;;
     task)
       if [ "${L_state[ref]}" = asking ] && [ -n "${L_q[ref]-}" ]; then # the question in the lane's colour, then its answers
@@ -1314,6 +1516,25 @@ row() { # row <item> <width> → $line (and $plain, its length on screen)
       if [ "$mode" = actions ]; then meta=${I_key[$1]}${ck:+  ^$ck}; elif [ -n "$ck" ]; then meta="^$ck"; else meta=${I_key[$1]}; fi
       ;;
     cmd | handoff) hl "$t"; line="  ${MUTED}+${R} ${TEXT}${hlo}${R}"; plain=$((4 + ${#t})); meta=${I_key[$1]} ;;
+    setting | choice)
+      meta=${I_key[$1]}
+      local marker='›'
+      if [ "$k" = choice ]; then
+        case $meta in Current*) marker='●' ;; *) marker='○' ;; esac
+        cmeta="${MUTED}${meta}${R}"
+      else
+        local cap=$((w / 2 - 3))
+        ((cap > 0 && ${#meta} > cap)) && meta="${meta:0:cap-1}…"
+        meta=" $meta "
+        cmeta="${CHIP}${TEXT}${meta}${R}"
+      fi
+      n=$((w - ${#meta} - 6))
+      ((n < 1)) && n=1
+      t=${I_text[$1]}
+      ((${#t} > n)) && t="${t:0:n-1}…"
+      hl "$t"
+      line="  ${MUTED}${marker}${R} ${TEXT}${hlo}${R}"; plain=$((4 + ${#t}))
+      ;;
     queued)
       t=${t:0:$((w - 15))}
       hl "$t"; line="  ${BLUE}↪${R} ${TEXT}${hlo}${R}"; plain=$((4 + ${#t}))
@@ -1334,6 +1555,68 @@ wrap() { # wrap <width> <prefix> <text>: the text folded at spaces, onto R_lines
 }
 
 say() { wrap "$w" "$MUTED" "$1"; } # a line of explanation on the right side
+
+setting_copy() {
+  local text=$1 part
+  ((w > 0)) || return
+  while ((${#text} > w)); do
+    part=${text:0:w}
+    if [[ $part == *' '* ]] && [ "${text:w:1}" != ' ' ]; then part=${part% *}; fi
+    [ -n "$part" ] || part=${text:0:w}
+    R_lines+=("${MUTED}${part}${R}")
+    text=${text#"$part"}; text=${text# }
+  done
+  R_lines+=("${MUTED}${text}${R}")
+}
+
+settings_side() {
+  local key=${editing_setting:-${I_ref[cur]-}} value current details w=$((w < 54 ? w : 54))
+  if [ -z "$key" ]; then
+    ((settings_ready)) && setting_copy 'Press Esc to clear the search.'
+    return
+  fi
+  setting_info "$key"
+  value=$setting_current
+  [ "$mode" != setting ] || value=${I_ref[cur]}
+  setting_label "$setting_current"; current=$setting_caption
+  R_lines+=("${BOLD}${TEXT}${setting_title:0:w}${R}" '')
+  details=$setting_help
+  case $key:$value in
+    grouping:workspace) details="Keeps lanes from the same workspace together. $setting_help" ;;
+    grouping:state) details="Groups lanes by agent state across workspaces. $setting_help" ;;
+    automanaged:off)
+      [ "$mode" = browse ] || details='Turning this preview off pauses routing and keeps tabs where they are. Pitwall keeps your labels and queued work.' ;;
+    automanaged:on) details='Sorts agent tabs into Working, Needs you, Review, Draft and Idle. The tab you are using moves after you leave it. Also enables labels and Planned.' ;;
+  esac
+  if [ "$key" = resume-custom ]; then
+    setting_copy "$details"
+    if [ "$mode" = setting-profile ]; then
+      if [ -n "$profiles" ]; then setting_copy "Configured agents · $profiles"
+      else setting_copy 'Use the agent name from its saved session, such as my-agent.'; fi
+    fi
+    return
+  fi
+  setting_copy "$details"
+  R_lines+=('')
+  if [ "$key" = prices ]; then setting_copy "$PRICE_FILE"; return; fi
+  if [ "$mode" = setting ] && [ "$value" != "$setting_current" ]; then
+    setting_label "$value"
+    R_lines+=("${TEXT}${current} → ${setting_caption}${R}")
+    setting_copy 'Applies when you save.'
+  else
+    setting_label "$setting_default"
+    if [ "$current" = "$setting_caption" ]; then
+      setting_copy "Current and default  ·  $current"
+    else
+      setting_copy "Current  ·  $current"
+      setting_copy "Default  ·  $setting_caption"
+    fi
+    if [ "$mode" = browse ]; then
+      R_lines+=('')
+      setting_copy 'Changes are saved on this computer.'
+    fi
+  fi
+}
 
 bar() { # bar <percent> → $b, ten cells
   local f=$(($1 / 10)) c=$MUTED
@@ -1435,6 +1718,17 @@ plugin_side_line() { # plugin_side_line <side record>, at the current side width
 side() { # side <width> → R_lines (array of drawn lines)
   local w=$1 k=${I_kind[cur]-} ref=${I_ref[cur]-} i dir t s n=0 newest='' room v seen j same_row=0
   R_lines=()
+  if [ "$view" = settings ]; then settings_side; return; fi
+  if [ "$mode" = planpick ]; then
+    if ((${#plan_recipes[@]})); then
+      R_lines+=("${BOLD}QUEUE A WORKSPACE${R}" '')
+      setting_copy 'Choose a saved workspace. You can start it from Planned when you are ready.'
+    else
+      R_lines+=("${BOLD}SAVE A WORKSPACE FIRST${R}" '')
+      setting_copy 'Run pitwall up --save in a workspace to save its tabs as a recipe.'
+    fi
+    return
+  fi
   if [ "$mode" = handoff ] || { [ "$mode" = confirm ] && [ "$prompt_do" = handoff ]; }; then
     R_lines+=("${BOLD}CONTEXT TO STAGE${R}" '')
     [ -z "$handoff_folder" ] || R_lines+=("${MUTED}$handoff_folder${R}")
@@ -1480,6 +1774,16 @@ side() { # side <width> → R_lines (array of drawn lines)
       age "${L_since[i]}"
       upper "${L_window[i]} · ${L_state[i]}${a:+ ${a}} · ${L_harness[i]:-shell}"
       R_lines+=("${DIM}${u}${R}")
+      if [ "$AUTO" = on ]; then
+        t='' n=0
+        for s in ${L_labels[i]}; do
+          if ((n && n + ${#s} + 3 > w)); then R_lines+=("$t"); t='' n=0; fi
+          t+="${CHIP}${TEXT} $s ${R} "; n=$((n + ${#s} + 3))
+        done
+        [ -z "$t" ] || R_lines+=("$t")
+        [ -z "${L_draft[i]}" ] || R_lines+=("${DRAFT_BG}${DRAFT_FG}${BOLD} Draft ${R} ${MUTED}Unsent input in the agent${R}")
+        [ "${L_managed[i]}" != 1 ] || R_lines+=("${DIM}Automanaged tab${R}")
+      fi
       tilde "${L_dir[i]-}"
       t="${metrics:+${metrics} · }${td}"
       if [ -n "$m_pct" ]; then bar "$m_pct"; R_lines+=("${DIM}ctx ${R}${b} ${DIM}${m_pct}% · ${t:0:$((w - 20))}${R}"); else R_lines+=("${DIM}${t:0:$w}${R}"); fi
@@ -1569,6 +1873,15 @@ side() { # side <width> → R_lines (array of drawn lines)
         upsave) say "Writes ~/.config/pitwall/up/$(here_ws).toml from its tabs: each one's folder, agent or running command. Then «up» brings it back any time." ;;
         selstate) say "Adds every lane in that state to the selection: then ctrl-x closes them, ctrl-w moves them." ;;
         inbox) say "Questions, unread completions and handoffs from every workspace." ;;
+        settings) say "Customize the dashboard and try Feature Previews." ;;
+        planned) say "Queued recipes and handoffs. Pick one when you are ready to start." ;;
+        planstart) say "Bring up this saved workspace recipe." ;;
+        planadd)
+          setting_copy 'Queue a saved workspace to start later. It stays here until you choose Start.'
+          R_lines+=('')
+          setting_copy 'To queue a handoff, open its recipient review and press q. It stays in that lane’s Inbox until you send it.'
+          ;;
+        label-add | label-remove) say "Labels follow the agent session across moves and restores." ;;
         read) say "Clears the unread mark on this lane." ;;
         restore) say "Browse recoverable lanes and resume the one you choose." ;;
         search) say "Searches the last 500 lines of every lane." ;;
@@ -1628,7 +1941,7 @@ footer() {
   case $mode in
     browse)
       local esc_does
-      if [ -n "$query" ]; then esc_does=clear; elif [ "$view" = "p$detail" ] || [ "$view" = restore ] || [ "$view" = inbox ] || [ "$view" = handoffs ]; then esc_does=back; elif ((picked)); then esc_does=unselect; else esc_does=close; fi
+      if [ -n "$query" ]; then esc_does=clear; elif [ "$view" = "p$detail" ] || [ "$view" = restore ] || [ "$view" = inbox ] || [ "$view" = handoffs ] || [ "$view" = settings ] || [ "$view" = planned ]; then esc_does=back; elif ((picked)); then esc_does=unselect; else esc_does=close; fi
       local prev_view='shift-tab:previous' inbox_key='ctrl-z:inbox'
       neighbor_view 1
       if [ "$view" = restore ]; then
@@ -1651,7 +1964,17 @@ footer() {
           [ -n "$query" ] || review='k:dismiss'
           chips '⏎:review handoff' ${review:+"$review"} 'ctrl-n e:down up' "esc:$esc_does"
         else chips "esc:$esc_does"; fi
-      elif [ "$view" = usage ]; then chips '⏎:go to the lane' '→:actions' 'tab:lanes' "$prev_view" 'ctrl-n e:down up' "esc:$esc_does"
+      elif [ "$view" = settings ]; then
+      if [ "${I_kind[cur]-}" = setting ]; then chips '⏎:edit' '↑ ↓:move' "esc:$esc_does" "tab:$nvl" "$prev_view" 'ctrl-n e:move'
+        else chips "esc:$esc_does" "tab:$nvl" "$prev_view"; fi
+      elif [ "$view" = planned ]; then
+        local primary='⏎:choose workspace' actions_key=''
+        case ${I_ref[cur]-} in
+          planstart@*) primary='⏎:start'; actions_key='→:actions' ;;
+          %*) primary='⏎:review handoff' ;;
+        esac
+        chips "$primary" ${actions_key:+"$actions_key"} '↑ ↓:move' "esc:$esc_does" "tab:$nvl" "$prev_view"
+      elif [ "$view" = usage ]; then chips '⏎:go to the lane' '→:actions' "tab:$nvl" "$prev_view" 'ctrl-n e:down up' "esc:$esc_does"
       elif ((picked)) && [ "$view" = lanes ]; then chips '⏎:go' '→:actions' "$inbox_key" "esc:$esc_does" "tab:$nvl" "$prev_view" "ctrl-w:move $picked" "ctrl-x:close $picked" "ctrl-s:write $picked"
       elif [ "${view:0:1}" = p ]; then
         if ! pv_commands "${view#p}"; then
@@ -1674,6 +1997,17 @@ footer() {
       else chips '⏎:go / run' '→:actions' "$inbox_key" "esc:$esc_does" "tab:$nvl" "$prev_view" 'ctrl-n e:down up' 'ctrl+key:act'; fi
       ;;
     actions) chips 'n e:down up' '⏎:run' 'a letter:direct' 'tab:next view' 'shift-tab:previous view' 'esc:back' ;;
+    setting)
+      setting_info "$editing_setting"
+      if [ "${I_ref[cur]}" = "$setting_current" ]; then chips '⏎:done' 'esc:cancel' '↑ ↓:choose'
+      else chips '⏎:save' 'esc:cancel' '↑ ↓:choose'; fi
+      ;;
+    setting-text) chips '⏎:save' 'esc:cancel' 'ctrl-u:clear' 'ctrl-d:default' ;;
+    setting-profile) chips '⏎:choose agent' 'esc:cancel' 'ctrl-u:clear' ;;
+    planpick)
+      if [ "${I_kind[cur]-}" = cmd ]; then chips '⏎:queue' '↑ ↓:move' 'esc:back'
+      else chips 'esc:back'; fi
+      ;;
     move) chips 'ctrl-n e:down up' '⏎:move here' 'esc:back' ;;
     handoff) chips '⏎:review recipient' 'ctrl-o:open full handoff' ${source_key:+"$source_key"} 'ctrl-n e:down up' 'esc:back' ;;
     agent) chips 'n e:down up' '⏎:open' 'esc:back' ;;
@@ -1695,6 +2029,7 @@ draw() {
   meter_running=0
   [ "$mode" = help ] && { draw_help; return; }
   local out row y lw=$((cols * 48 / 100)) rw i c_ask=0 c_done=0 c_work=0 c_idle=0 body n box hint label footer_top F_lines=()
+  [ "$view" = settings ] && ((lw > 46)) && lw=46
   [ "$view" = usage ] && lw=$((cols - 34 > 104 ? 104 : cols - 34)) # the table needs ~100 columns; the rest is the detail
   rw=$((cols - lw - 5))
   clock
@@ -1706,7 +2041,11 @@ draw() {
   local tabs tl=0 v vl right=$quota
   tabs=''
   for v in "${VIEW_LIST[@]}"; do
-    case $v in lanes) vl='Lanes' ;; usage) vl='Usage' ;; *) vl=${PV_name[${v#p}]} ;; esac
+    [ "$v:$AUTO" != planned:off ] || continue
+    case $v in
+      lanes) vl=Lanes ;; usage) vl=Usage ;; planned) vl=Planned ;; settings) vl=Settings ;;
+      *) vl=${PV_name[${v#p}]} ;;
+    esac
     if [ "$v" = "$view" ] || { [ "$view" = "p$detail" ] && [ "$v" = "$detail_tab" ]; }; then tabs+="${CHIP}${BOLD}${TEXT} ${vl}"; else tabs+="${MUTED} ${vl}"; fi
     tl=$((tl + ${#vl} + 3))
     [ "${v:0:1}" = p ] && [ -n "${PV_badge[${v#p}]}" ] && tabs+=" ${PV_badge[${v#p}]}" && tl=$((tl + 1 + ${PV_badgel[${v#p}]}))
@@ -1727,22 +2066,39 @@ draw() {
   [ "$view" = restore ] && hint='find a recoverable lane'
   [ "$view" = handoffs ] && hint='find a saved handoff'
   [ "$view" = inbox ] && hint='Inbox · filter lanes'
+  [ "$view" = planned ] && hint='Planned · filter workspaces and handoffs'
+  [ "$view" = settings ] && hint='Settings · find a setting'
   case $mode in
     browse) box=$AMBER; [ "${view:0:1}" = p ] && pv_commands "${view#p}" && box=$DIM hint='each command has its key' ;;
     move) box=$AMBER label='move to ❯' hint='type a workspace; a new name makes one' ;;
     handoff) box=$AMBER label='to ❯' hint='filter idle agents' ;;
     prompt) box=$AMBER label="$prompt_label ❯" hint='⏎ confirm · esc cancel' ;;
+    setting) setting_info "$editing_setting"; label=$setting_title hint='Edit setting' ;;
+    setting-text) box=$AMBER label='Value ❯' hint='Edit setting' ;;
+    setting-profile) box=$AMBER label='Agent name ❯' hint='Find a resume command' ;;
+    planpick) box=$AMBER hint='Find a saved workspace' ;;
     confirm)
       if [ "$prompt_do" = handoff ]; then label='Review handoff' hint='esc back'
       else hint='esc to go back to the search'; fi
       ;;
     actions | agent) hint='esc to go back to the search' ;;
   esac
-  local inner=$((cols - 6)) q=$query cursor=''
-  case $mode in browse | move | handoff | prompt) cursor="${AMBER}▏${R}" ;; *) q='' ;; esac
+  local inner=$((cols - 6)) q=$query cursor='' right_of_cursor=''
+  case $mode in
+    browse | move | handoff | planpick | prompt) cursor="${AMBER}▏${R}" ;;
+    setting-text | setting-profile)
+      local room=$((inner - ${#label} - ${#hint} - 6)) start=0
+      ((room < 3)) && room=3
+      ((edit_pos >= room)) && start=$((edit_pos - room + 2))
+      q=${setting_draft:start:edit_pos-start} cursor="${AMBER}▏${R}"
+      ((start == 0)) || q="…$q"
+      right_of_cursor=${setting_draft:edit_pos:room-${#q}}
+      ;;
+    *) q='' ;;
+  esac
   fill "$inner" ─; out+="  ${box}╭${fl}╮${R}${EOL}"$'\n'
   printf -v row '  %s│%s %s%s%s %s%s%s' "$box" "$R" "$AMBER" "$label" "$R" "$TEXT" "${q:0:$((inner - ${#label} - ${#hint} - 6))}" "$R"
-  out+="$row$cursor${EOL}${E}[4;$((cols - ${#hint} - 3))H${DIM}${hint}${R} ${box}│${R}"$'\n'
+  out+="$row$cursor${TEXT}${right_of_cursor}${R}${EOL}${E}[4;$((cols - ${#hint} - 3))H${DIM}${hint}${R} ${box}│${R}"$'\n'
   out+="  ${box}╰${fl}╯${R}${EOL}"$'\n'
   # Body: the list on the left, what is under the cursor on the right.
   footer
@@ -1760,7 +2116,8 @@ draw() {
     out+="${E}[${y};1H"
     if ((i < ${#I_kind[@]})); then
       row "$i" "$lw"
-      if ((i == cur)) && { [ "$mode" != confirm ] || [ "$prompt_do" != handoff ]; }; then
+      if ((i == cur)) && { [ "$mode" != confirm ] || [ "$prompt_do" != handoff ]; } &&
+        { [ "$view" != settings ] && [ "$mode" != planpick ] || selectable "$i"; }; then
         fill $((lw - plain - 1 > 0 ? lw - plain - 1 : 0)) ' '
         out+="${SELBG}${AMBER}▌${R}${SELBG}${line//${R}/${R}${SELBG}}${fl}${R}"
       else
@@ -1773,6 +2130,19 @@ draw() {
     out+="${EOL}"
   done
   fill "$cols" ─; out+="${E}[${footer_top};1H${LINE}${fl}${R}"
+  if [ "$mode" = browse ] && [ "$box" = "$AMBER" ]; then
+    local above=0 below=0 overflow=''
+    for ((i = 0; i < ${#I_kind[@]}; i++)); do
+      case ${I_kind[i]} in head | task | pipe | info | act | cmd) continue ;; esac
+      if ((i < top)); then ((above++)); elif ((i >= top + body)); then ((below++)); fi
+    done
+    ((above > 0)) && overflow="↑ $above above"
+    ((below > 0)) && overflow+="${overflow:+ · }↓ $below more below"
+    if [ -n "$overflow" ]; then
+      overflow+=' · type to filter'
+      out+="${E}[${footer_top};3H${MUTED} ${overflow:0:cols-5} ${R}"
+    fi
+  fi
   for ((i = 0; i < ${#F_lines[@]}; i++)); do
     out+="${E}[$((footer_top + i + 1));1H${F_lines[i]}${EOL}"
   done
@@ -1892,13 +2262,55 @@ act() { # act <ref>: what an action or a command does
   if ((mc)); then case $code in close | interrupt | restart | write | rename) group_act "$code"; return ;; esac; fi
   case $code in
     inbox | interrupt) feature_use "$code" ;;
-    select | selstate) feature_use select-lanes ;;
+    select | selstate | selquery) feature_use select-lanes ;;
     output) feature_use read-output ;;
     copy) feature_use copy-resume ;;
     search) feature_use search-output ;;
     undo) feature_use undo-move ;;
   esac
   case $code in
+    settings) view=settings top=0 cur_sig='' notice=''; load_start; to_browse ;;
+    grouping)
+      if [ "$GROUP" = state ]; then local value=workspace; else local value=state; fi
+      if notice=$("$PITWALL" settings grouping "$value" 2>&1); then notice="lanes by $value"; fi
+      load_obsolete=1; load; dirty=1
+      ;;
+    label-add | label-remove)
+      target=''
+      if ((mc)); then selected; else sel=("$arg"); fi
+      for i in "${sel[@]}"; do target+=" ${L_id[i]}:${L_harness[i]}:${L_sid[i]}"; done
+      if ((mc)); then ask "${code#label-} label · $mc lanes" '' "$code"
+      else ask "${code#label-} label · ${L_window[arg]}" '' "$code"; fi
+      ;;
+    planned) view=planned top=0 cur_sig='' notice=''; to_browse ;;
+    planadd)
+      plan_recipes=()
+      local recipe queued_recipe
+      while IFS=$'\t' read -r recipe _; do
+        for queued_recipe in "${planned[@]}"; do [ "$recipe" != "$queued_recipe" ] || continue 2; done
+        plan_recipes+=("$recipe")
+      done < <("$PITWALL" up --list --plain 2>/dev/null)
+      mode=planpick plan_query=$query query='' cur_sig='' top=0 notice=''; build
+      ;;
+    planqueue)
+      if ! notice=$("$PITWALL" plan add "$arg" 2>&1); then
+        notice=${notice:-'This saved workspace is no longer available'}
+        dirty=1
+        return
+      fi
+      mode=browse query='' cur_sig="cmd:planstart@$arg" top=0
+      planned+=("$arg")
+      load_obsolete=1
+      build
+      ;;
+    planstart)
+      run_inline sh -c '"$0" plan start "$1"; printf "\n  ⏎ back to Planned "; read -r _' "$PITWALL" "$arg"
+      to_browse; load_obsolete=1; load
+      ;;
+    plandrop)
+      if notice=$("$PITWALL" plan drop "$arg" 2>&1); then notice="Removed $arg from Planned"; fi
+      to_browse; load_obsolete=1; load
+      ;;
     favorite | unfavorite)
       i=$(lane_of "$arg"); [ -n "$i" ] || return
       local fav=1
@@ -1913,6 +2325,11 @@ act() { # act <ref>: what an action or a command does
       ;;
     unselect) marks='|' notice='selection cleared'; to_browse ;;
     selstate) for ((i = 0; i < ${#L_id[@]}; i++)); do [ "${L_state[i]}" = "$arg" ] && ! marked "${L_id[i]}" && marks+="${L_id[i]}|"; done; notice="every $arg lane selected"; to_browse ;;
+    selquery)
+      query=$arg
+      for ((i = 0; i < ${#L_id[@]}; i++)); do lane_matches "$i" && ! marked "${L_id[i]}" && marks+="${L_id[i]}|"; done
+      cur_sig=''; build; peek
+      ;;
     go) jump "$arg" ;;
     answer) notice="1 2 3 answer ${L_window[arg]}"; dirty=1 ;;
     output) # the empty rows under the last line dropped, so less opens on the output, not on a blank page
@@ -1982,7 +2399,9 @@ act() { # act <ref>: what an action or a command does
     inbox) view=inbox top=0 cur_sig='' notice=''; to_browse ;;
     read)
       [ "${L_state[arg]}" = done ] || return
-      if lane_if_current "$arg" "set -p -t ${L_id[arg]} @pitwall_state idle"; then feature_use mark-read; notice="${L_window[arg]} marked as read"
+      if lane_if_current "$arg" "set -p -t ${L_id[arg]} @pitwall_state idle"; then
+        feature_use mark-read; notice="${L_window[arg]} marked as read"
+        [ "$AUTO" != on ] || "$PITWALL" _route >/dev/null 2>&1 &
       else notice='the lane changed · review its current state'; fi
       load_obsolete=1
       if [ "$mode" = actions ]; then to_browse; fi
@@ -2105,8 +2524,14 @@ pv_action_poll() {
 }
 
 answer() { # ⏎ in a prompt
-  local v=$query ws dir pane id
+  local v=$query ws dir pane id recipients=()
   case $prompt_do in
+    label-add | label-remove)
+      read -r -a recipients <<<"$target"
+      if notice=$("$PITWALL" _label "${prompt_do#label-}" "$v" "${recipients[@]}" 2>&1); then marks='|'
+      else dirty=1; return; fi
+      load_obsolete=1
+      ;;
     handoff-title)
       [[ $v = *[![:space:]]* ]] || v=''
       if ((${#v} > 120)); then notice='handoff title exceeds 120 characters'; dirty=1; return; fi
@@ -2205,12 +2630,74 @@ confirmed() { # y in a confirmation
   load
 }
 
+leave_setting() {
+  mode=browse cur_sig="setting:${setting_origin:-$editing_setting}" editing_setting='' setting_origin='' top=0 notice=''
+  build
+}
+
+save_setting() {
+  local key=$editing_setting value=$1 error title kind i
+  setting_info "$key"; title=$setting_title kind=$setting_kind
+  if [ "$value" = "$setting_current" ]; then leave_setting; return; fi
+  if ! error=$("$PITWALL" settings "$key" "$value" 2>&1); then
+    notice="Could not save this setting${error:+ · ${error%%$'\n'*}}"
+    dirty=1
+    return
+  fi
+  case $key in grouping) GROUP=$value ;; automanaged) AUTO=$value ;; agent) AGENT=$value ;; esac
+  for ((i = 0; i < ${#K_id[@]}; i++)); do
+    [ "${K_id[i]}" != "$key" ] || { K_live[i]=$value; break; }
+  done
+  leave_setting
+  setting_label "$value"
+  case $kind in *,*) notice="Saved · $title · $setting_caption" ;; *) notice="Saved · $title" ;; esac
+  load_obsolete=1
+}
+
 enter() { # ⏎: the obvious thing for what is under the cursor
+  if [ "$mode" = setting-profile ]; then
+    case $setting_draft in
+      '' | [!a-z0-9]* | *[!a-z0-9_-]* | custom) notice='Enter a lowercase agent name'; dirty=1; return ;;
+    esac
+    editing_setting=resume-$setting_draft setting_origin=resume-custom
+    profile_value=$("$PITWALL" settings "$editing_setting" 2>/dev/null)
+    setting_draft=${profile_value#\-} mode=setting-text notice=''
+    edit_pos=${#setting_draft}
+    build
+    return
+  fi
+  if [ "$mode" = setting-text ]; then
+    if [ -z "$setting_draft" ] && [ "$setting_origin" = resume-custom ]; then save_setting -
+    else save_setting "$setting_draft"; fi
+    return
+  fi
   if [ "$mode" = browse ] && [ "$view" = lanes ]; then
     handoff_scan_poll
     if ((auto_pick)) && [ -n "$query" ] && [ "$cur_sig" = cmd:newws ] && [ -n "$handoff_scan_pid" ]; then return; fi
   fi
   case ${I_kind[cur]-} in
+    setting)
+      setting_info "${I_ref[cur]}"
+      case $setting_kind in
+        file)
+          local editor=${VISUAL:-${EDITOR:-vi}}
+          if command -v "$editor" >/dev/null && mkdir -p "${PRICE_FILE%/*}"; then run_inline "$editor" "$PRICE_FILE"
+          else notice='Set EDITOR to an installed editor'; fi
+          dirty=1
+          return ;;
+        profile)
+          mode=setting-profile setting_draft=''
+          profiles=$("$PITWALL" settings _profiles 2>/dev/null)
+          profiles=${profiles//$'\n'/, }
+          ;;
+        *,*) mode=setting; cur_sig="choice:$setting_current" ;;
+        *) mode=setting-text; setting_draft=$setting_current ;;
+      esac
+      editing_setting=${I_ref[cur]} top=0 notice=''
+      edit_pos=${#setting_draft}
+      build
+      ;;
+    choice) save_setting "${I_ref[cur]}" ;;
     lane) [ "$mode" = move ] || jump "${I_ref[cur]}" ;;
     dest) handoff_to "${I_ref[cur]}" ;;
     handoff) handoff_pick "${I_ref[cur]}" && feature_use handoff-open ;;
@@ -2230,6 +2717,7 @@ tab_actions() { # →: everything you can do with what is under the cursor
     lane) target="lane:${I_ref[cur]}" ;;
     ws) target="ws:${I_ref[cur]}" ;;
     prow) target="prow:${I_ref[cur]}" ;;
+    cmd) case ${I_ref[cur]} in planstart@*) target="planned:${I_ref[cur]#*@}" ;; *) return ;; esac ;;
     *) return ;;
   esac
   mode=actions back_sig=$cur_sig cur_sig=''
@@ -2247,7 +2735,7 @@ leave_detail() {
 switch_view() { # tab / shift-tab: next / previous view
   local keep=${back_sig:-$cur_sig}
   neighbor_view "$1"; [ "$view" = "p$detail" ] && leave_detail; view=$nv
-  case $view in usage) feature_use usage ;; p*) feature_use "${PV_id[${view#p}]-}" view ;; esac
+  case $view in usage) feature_use usage ;; settings) load_start ;; p*) feature_use "${PV_id[${view#p}]-}" view ;; esac
   [ "$view" = usage ] && usage_start
   [ "$view" = lanes ] && load_start
   cur_sig=${other_sig:-} other_sig=$keep back_sig='' top=0 notice=''
@@ -2257,9 +2745,11 @@ switch_view() { # tab / shift-tab: next / previous view
 
 back() { # esc: one layer at a time
   case $mode in
+    planpick) mode=browse query=$plan_query cur_sig=cmd:planadd top=0 notice=''; build ;;
+    setting | setting-text | setting-profile) leave_setting ;;
     browse)
       if [ -n "$query" ]; then query='' found='' searched=0; build; peek
-      elif [ "$view" = restore ] || [ "$view" = inbox ] || [ "$view" = handoffs ]; then view=lanes cur_sig='' notice='' top=0; to_browse
+      elif [ "$view" = restore ] || [ "$view" = inbox ] || [ "$view" = handoffs ] || [ "$view" = settings ] || [ "$view" = planned ]; then view=lanes cur_sig='' notice='' top=0; to_browse
       elif [ "$view" = "p$detail" ]; then
         leave_detail; query=$detail_query cur_sig='' notice=''
         pv_cursor "${detail_tab#p}" "$detail_row"
@@ -2353,16 +2843,36 @@ while :; do
   if [ "$k" = "$E" ]; then # an arrow, or esc on its own: whatever followed that is not an arrow is a key of its own
     rest='' r2=''
     IFS= read -rsn1 -t "$ESCWAIT" rest
-    [ "$rest" = '[' ] && IFS= read -rsn1 -t "$ESCWAIT" r2 && rest+=$r2
+    if [ "$rest" = '[' ] || [ "$rest" = O ]; then IFS= read -rsn1 -t "$ESCWAIT" r2 && rest+=$r2; fi
     case $rest in
       '[A') k=$'\x05' ;; '[B') k=$'\x0e' ;; '[C') k=RIGHT ;; '[D') k=LEFT ;; '[Z') k=BTAB ;;
-      '[5' | '[6')
+      '[H' | OH) k=HOME ;; '[F' | OF) k=END ;;
+      '[1' | '[3' | '[4' | '[5' | '[6' | '[7' | '[8')
         r2=''; IFS= read -rsn1 -t "$ESCWAIT" r2
         if [ "$r2" = '~' ]; then k=$rest; else k=ESC pending="$rest$r2$pending"; fi ;;
       '') k=ESC ;; *) k=ESC pending="$rest$pending" ;;
     esac
   fi
   [ "$mode" = help ] && { mode=browse dirty=1; continue; }
+  if [ "$mode" = setting-text ] || [ "$mode" = setting-profile ]; then
+    case $k in
+      $'\x7f' | $'\b')
+        if ((edit_pos > 0)); then setting_draft="${setting_draft:0:edit_pos-1}${setting_draft:edit_pos}"; edit_pos=$((edit_pos - 1)); fi ;;
+      '[3') setting_draft="${setting_draft:0:edit_pos}${setting_draft:edit_pos+1}" ;;
+      $'\x15') setting_draft='' edit_pos=0 ;;
+      $'\x04') if [ "$mode" = setting-text ]; then setting_info "$editing_setting"; setting_draft=${setting_default#\-}; edit_pos=${#setting_draft}; fi ;;
+      LEFT) ((edit_pos > 0)) && edit_pos=$((edit_pos - 1)) ;;
+      RIGHT) ((edit_pos < ${#setting_draft})) && edit_pos=$((edit_pos + 1)) ;;
+      HOME | '[1' | '[7') edit_pos=0 ;;
+      END | '[4' | '[8') edit_pos=${#setting_draft} ;;
+      ESC) back; continue ;;
+      '') enter; continue ;;
+      $'\x03') exit 0 ;;
+      *) if [[ $k = [[:print:]] ]]; then setting_draft="${setting_draft:0:edit_pos}$k${setting_draft:edit_pos}"; edit_pos=$((edit_pos + 1)); fi ;;
+    esac
+    notice='' dirty=1
+    continue
+  fi
   case $k in
     $'\x0e') step 1; continue ;; # ctrl-n, or ↓
     $'\x05') step -1; continue ;; # ctrl-e, or ↑
@@ -2377,7 +2887,7 @@ while :; do
     $'\t') case $mode in browse | actions) switch_view 1 ;; esac; continue ;;
     BTAB) case $mode in browse | actions) switch_view -1 ;; esac; continue ;;
     RIGHT) [ "$mode" = browse ] && tab_actions; continue ;;
-    LEFT) if [ "$mode" = actions ]; then to_browse; elif [ "$mode" = browse ] && [ "$view" = "p$detail" ]; then back; fi; continue ;;
+    LEFT) if [ "$mode" = actions ]; then to_browse; elif [ "$mode" = setting ] || { [ "$mode" = browse ] && [ "$view" = "p$detail" ]; }; then back; fi; continue ;;
     $'\x03') exit 0 ;; # ctrl-c closes, wherever you are
   esac
   if [ ${#k} = 1 ] && [[ $k == [[:cntrl:]] ]] && [ "$k" != $'\b' ]; then # ctrl+letter: an action, even mid-search
@@ -2392,9 +2902,7 @@ while :; do
       if ((o == 26)) && [ "$mode" = browse ] && [ "$view" = lanes ]; then act inbox; continue; fi
       if ((o == 21)) && [ "$mode" = browse ]; then query='up ' cur_sig='' top=0; build; continue; fi # ctrl-u: the recipes
       if ((o == 6)) && [ "$mode" = browse ]; then # ctrl-f: lanes by workspace, or by state; remembered
-        if [ "$GROUP" = state ]; then GROUP=workspace; else GROUP=state; fi
-        tmux set -g @pitwall_dash_group "$GROUP" 2>/dev/null
-        notice="lanes by $GROUP" cur_sig=${cur_sig:-} top=0; build
+        act grouping
         continue
       fi
       case $mode in browse | actions) printf -v l "\\$(printf '%03o' $((o + 96)))"; ctrl_act "$l" ;; esac
@@ -2421,7 +2929,7 @@ while :; do
     fi
   fi
   case $mode in
-    browse | move | handoff | prompt) # the search box takes the typing
+    browse | move | handoff | planpick | prompt) # the search box takes the typing
       case $k in
         $'\x7f' | $'\b') query=${query%?} searched=0 ;;
         '?') if [ "$mode" = browse ] && [ -z "$query" ]; then mode=help dirty=1; continue; fi; query+=$k ;;

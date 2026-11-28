@@ -1,0 +1,39 @@
+grouping	workspace,state	workspace	DASHBOARD	Group lanes	Queues that need your attention stay at the top.
+automanaged	off,on	off	FEATURE PREVIEW	Automanaged	Keep five workspaces available, sort agent tabs by state, and show session labels and Planned.
+idle-after	seconds	900	FEATURE PREVIEW	Idle timeout (seconds)	Active agents and pending requests keep their state. Quiet tabs move to Idle after this many seconds. Enter 0 to move immediately.
+layout	inline,tabs	inline	APPEARANCE	Status layout	Inline decorates your tmux theme. Tabs puts workspaces and windows at the top with a status line below.
+tab-caps	off,on	on	APPEARANCE	Rounded tab ends	Tabs only. Round ends use Nerd Font glyphs. Turn this off for plain ends.
+color-strip	colour	#111111	APPEARANCE	Tab strip colour	Background of the strip in the Tabs layout. Enter a #RRGGBB hex colour.
+color-tab	colour	#2a2a2a	APPEARANCE	Active tab colour	Background of the active tab in the Tabs layout. Enter a #RRGGBB hex colour.
+color-pill	colour	#1f1f1f	APPEARANCE	Workspace colour	Background of workspace pills in the Tabs layout. Enter a #RRGGBB hex colour.
+color-working	colour	#1c4d42	APPEARANCE	Working workspace colour	Accent for the Working workspace in the Tabs layout.
+color-needs-you	colour	#684217	APPEARANCE	Needs you workspace colour	Accent for the Needs you workspace in the Tabs layout.
+color-review	colour	#493762	APPEARANCE	Review workspace colour	Accent for the Review workspace in the Tabs layout.
+color-draft	colour	#1e3a5f	APPEARANCE	Draft colour	Accent for the Draft workspace and badges in the dashboard.
+color-idle	colour	#363e4a	APPEARANCE	Idle workspace colour	Accent for the Idle workspace in the Tabs layout.
+color-asking	colour	#f59e0b	APPEARANCE	Asking colour	Colour of the asking glyph in tmux. Enter a #RRGGBB hex colour.
+color-done	colour	#00c758	APPEARANCE	Done colour	Colour of the unread completion glyph in tmux. Enter a #RRGGBB hex colour.
+color-gone	colour	#fb2c36	APPEARANCE	Gone and urgent colour	Colour of gone lanes and urgent requests in tmux. Enter a #RRGGBB hex colour.
+tick-interval	interval	0.12	APPEARANCE	Spinner interval	Seconds between spinner frames in tmux. Applies when the spinner next starts.
+toast	off,on	on	NOTIFICATIONS	Lane notifications	Show a short tmux message when a lane asks a question or finishes.
+urgent-after	seconds	600	NOTIFICATIONS	Urgency threshold	Seconds before a new request turns urgent. Enter 0 to disable urgency.
+quota	off,on	on	USAGE AND PRIVACY	Provider usage limits	Show Claude and Codex usage limits read by CodexBar.
+codexbar	path	/Applications/CodexBar.app/Contents/Helpers/CodexBarCLI	USAGE AND PRIVACY	CodexBar CLI path	Absolute path to the CodexBar CLI used to read provider limits.
+system	off,on	off	USAGE AND PRIVACY	Machine metrics	Show CPU, GPU, memory, disk, network and battery in the Tabs layout.
+system-interval	interval	5	USAGE AND PRIVACY	System sample interval	Seconds between machine readings in the Tabs layout.
+feature-usage	off,on	on	USAGE AND PRIVACY	Local feature counts	Record which Pitwall features you use on this machine. PITWALL_FEATURE_USAGE=off also disables logging for a process.
+prices	file	-	USAGE AND PRIVACY	Model prices	Edit local model prices per million tokens. Each line lists model prefix, input, output, cache write and cache read.
+rename	off,on	on	AGENTS AND WORKSPACES	Name tabs from folders	Use the agent lane folder for automatic tmux window names.
+up-autosave	off,on	on	AGENTS AND WORKSPACES	Keep recipes up to date	Update workspace recipes made with pitwall up --save as their tabs change.
+agent	command	claude	AGENTS AND WORKSPACES	Default agent	Command started by pitwall new and the dashboard worktree action.
+agents	regex	^(claude|[0-9.]+|codex|gemini|qwen|opencode|grok|pi|droid|amp|cursor-agent|copilot|crush|goose|aider|kiro-cli)$	AGENTS AND WORKSPACES	Recognize agent programs	Extended regular expression matched against tmux pane command names.
+key-dashboard	key	Space	PREFIX SHORTCUTS	Open dashboard	tmux key after the prefix. Example C-Space.
+key-next	key	a	PREFIX SHORTCUTS	Next lane needs you	tmux key after the prefix for cycling through lanes that need you.
+key-restore	key	R	PREFIX SHORTCUTS	Restore saved lanes	tmux key after the prefix for opening the restore picker.
+resume-claude	resume	claude --resume {id}	RESUME COMMANDS	Claude resume command	Pitwall substitutes {id} with the saved session ID when you restore.
+resume-codex	resume	codex resume {id}	RESUME COMMANDS	Codex resume command	Pitwall substitutes {id} with the saved session ID when you restore.
+resume-hermes	resume	hermes --resume {id}	RESUME COMMANDS	Hermes resume command	Pitwall substitutes {id} with the saved session ID when you restore.
+resume-grok	resume	grok --resume {id}	RESUME COMMANDS	Grok resume command	Pitwall substitutes {id} with the saved session ID when you restore.
+resume-opencode	resume	opencode --session {id}	RESUME COMMANDS	OpenCode resume command	Pitwall substitutes {id} with the saved session ID when you restore.
+resume-pi	resume	pi --session {id}	RESUME COMMANDS	Pi resume command	Pitwall substitutes {id} with the saved session ID when you restore.
+resume-custom	profile	-	RESUME COMMANDS	Custom resume commands	Enter an agent name to inspect or edit its command. Pitwall substitutes {id} when you restore.
