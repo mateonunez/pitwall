@@ -350,12 +350,12 @@ cmd_ws() {
 
 cycle_workspace() {
   direction=$1 client=$2
-  target=$(tmux display -p -c "$client" '#{session_id} #{E:@pitwall-workspace-order}' |
-    awk -v direction="$direction" '
-      NF > 1 {
-        for (i = 2; i <= NF && $i != $1; i++) { }
-        if (direction == "n") print $(i >= NF ? 2 : i + 1)
-        else print $(i <= 2 || i > NF ? NF : i - 1)
+  target=$(tmux list-clients -F '#{client_name} #{session_id} #{E:@pitwall-workspace-order}' |
+    awk -v client="$client" -v direction="$direction" '
+      $1 == client && NF > 2 {
+        for (i = 3; i <= NF && $i != $2; i++) { }
+        if (direction == "n") print $(i >= NF ? 3 : i + 1)
+        else print $(i <= 3 || i > NF ? NF : i - 1)
       }')
   [ -z "$target" ] || tmux switch-client -c "$client" -t "$target"
 }

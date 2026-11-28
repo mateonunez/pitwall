@@ -1383,7 +1383,7 @@ until_workspace needs-you
 $WATCH -f /dev/null new-session -d -x 140 -y 25 "unset TMUX; TERM=xterm-256color exec $B attach -t needs-you"
 i=0
 while [ -z "$($B list-clients -F '#{client_name}')" ] && [ "$i" -lt 40 ]; do sleep .1; i=$((i + 1)); done
-bar=$($B display -p -c "$($B list-clients -F '#{client_name}')" '#{E:@pitwall-tabs-fmt}')
+bar=$($B list-clients -F '#{E:@pitwall-tabs-fmt}')
 eq "Needs you appears first and joins its active tab in the same accent" \
   "$(printf '%s\n' "$bar" | grep -c ']needs-you#\[bg=#684217\] #\[norange\]#\[range=window|.*revie.*]working.*]draft.*]review.*]pitwall-idle')" 1
 eq "Working stays expanded while Needs you is selected" \
