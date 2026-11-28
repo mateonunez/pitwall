@@ -246,7 +246,7 @@ if [ "$event" = SessionEnd ] && [ -z "${PITWALL_GONE_CHECKED:-}" ]; then
   tmux run-shell -b "sleep 2; case \$(tmux display -p -t '$TMUX_PANE' '##{pane_current_command}' 2>/dev/null) in zsh | -zsh | bash | -bash | fish | sh | -sh | dash | login) printf '{\"session_id\":\"$sid\"}' | PITWALL_GONE_CHECKED=1 TMUX_PANE='$TMUX_PANE' '$bin/pitwall-hook' SessionEnd '$harness' ;; esac" >/dev/null 2>&1
   exit 0
 fi
-viewers=$(tmux list-clients -f "#{==:#{window_id},$win}" -F '#{client_name}' 2>/dev/null)
+viewers=$(tmux list-clients -F "#{?#{==:#{window_id},$win},#{client_name},}" 2>/dev/null)
 if [ "$state" = stop ]; then
   # Finished while you look at it: idle. Finished while you are elsewhere: done, the unread mark.
   if [ -n "$viewers" ]; then state=idle; else state=done; fi
@@ -304,7 +304,7 @@ for c in $(tmux list-clients -F '#{client_name}' 2>/dev/null); do
   set -- "$@" refresh-client -S -t "$c"
   # A toast only for clients that are not already looking at the lane.
   if [ -n "$msg" ]; then
-    case " $(echo $viewers) " in *" $c "*) ;; *) set -- "$@" ';' display-message -c "$c" -d 3000 "$msg" ;; esac
+    case " $(echo $viewers) " in *" $c "*) ;; *) set -- "$@" ';' display-message -c "$c" "$msg" ;; esac
   fi
 done
 [ "$#" -eq 0 ] || tmux "$@" >/dev/null 2>&1

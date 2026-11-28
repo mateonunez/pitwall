@@ -659,7 +659,7 @@ cmd__escalate() {
   name=$(tmux display -p -t "$pane" '#{window_name}#{?#{>:#{window_panes},1},.#{pane_index},}')
   mins=$((($(date +%s) - since) / 60))
   tmux set -p -t "$pane" @pitwall_urgent 1
-  for c in $(tmux list-clients -F '#{client_name}'); do tmux refresh-client -S -t "$c" \; display-message -c "$c" -d 4000 "◆ $name has waited ${mins}m"; done
+  for c in $(tmux list-clients -F '#{client_name}'); do tmux refresh-client -S -t "$c" \; display-message -c "$c" "◆ $name has waited ${mins}m"; done
   cmd__emit lane.urgent "$pane" "$mins"
   return 0
 }

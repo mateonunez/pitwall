@@ -163,8 +163,7 @@ if [ "$(opt @pitwall-layout inline)" = tabs ]; then
   group_close="#{?#{?$EMPTY_WINDOW,0,$join},#[bg=$here_bg] ,#[fg=$here_bg bg=$STRIP nobold]$R}"
   HERE="#[range=session|#{session_id}]#[fg=$here_bg bg=$STRIP]$L#[fg=$here_fg bg=$here_bg bold]#{session_name}$group_close#[norange]#{W:#{?$EMPTY_WINDOW,,#{E:@pitwall-tabs-window}},#{?$EMPTY_WINDOW,,#{E:@pitwall-tabs-current}}}#[nounderscore bg=$STRIP]   "
   AWAY="#[range=session|#{session_id}]#[fg=$away_bg bg=$STRIP]$L#[fg=$away_fg bg=$away_bg]#{session_name}#{?$A, #[fg=$away_ask bold]◆$A#[nobold],}#{?$D, #[fg=$away_done bold]✓$D#[nobold],}#{?$K, #[fg=$away_work]#{?#{@pitwall_spin},#{@pitwall_spin},⠙}$K,}#[fg=$away_bg bg=$STRIP]$R#[norange]  "
-  case $TMUX_VERSION in 3.[0-6]*) away_range='session|#{session_id}' ;; *) away_range='pane|#{pane_id}' ;; esac
-  work_window="#[range=$away_range]#[fg=$MUTED bg=$STRIP underscore us=$away_bg] #{window_index} #{E:@pitwall-glyph}$NAME #[norange]"
+  work_window="#[range=session|#{session_id}]#[fg=$MUTED bg=$STRIP underscore us=$away_bg] #{window_index} #{E:@pitwall-glyph}$NAME #[norange]"
   AWAY_WORK="#[range=session|#{session_id}]#[fg=$away_bg bg=$STRIP]$L#[fg=$away_fg bg=$away_bg]#{session_name}#[fg=$away_bg bg=$STRIP]$R#[norange]#{W:#{?$EMPTY_WINDOW,,$work_window}}#[nounderscore]   "
   current_session='#{==:#{session_name},#{client_session}}'
   tmux set -g @pitwall-tabs-away "#{?$WORKING_GROUP,$AWAY_WORK,$AWAY}"

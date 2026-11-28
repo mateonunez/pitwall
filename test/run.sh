@@ -1211,7 +1211,7 @@ eq "a legacy tab joins the same shared workspace and keeps its origin" "$($B dis
 eq "a routed tab still counts as up for its project's recipe" "$(preview_cli up --list --plain | awk -F '\t' '$1 == "project" { print $3, $4 }')" '1 1'
 WATCH="tmux -L pitwall-preview-client-$$"
 $B select-window -t "$PREVIEW_WIN"
-$WATCH -f /dev/null new-session -d -x 100 -y 25 "unset TMUX; exec $B attach -t working"
+$WATCH -f /dev/null new-session -d -x 100 -y 25 "unset TMUX; TERM=xterm-256color exec $B attach -t working"
 i=0
 while [ -z "$($B list-clients -F '#{client_name}')" ] && [ "$i" -lt 40 ]; do sleep .1; i=$((i + 1)); done
 preview_hook PermissionRequest
@@ -1337,7 +1337,7 @@ i=0
 while [ "$(input_workspace)" != pitwall-idle ] && [ "$i" -lt 65 ]; do sleep .1; i=$((i + 1)); done
 eq "a dim placeholder stays out of Draft and the timer moves the quiet tab to Idle" "$(input_workspace)" pitwall-idle
 $B select-window -t "$INPUT"
-$WATCH -f /dev/null new-session -d -x 100 -y 25 "unset TMUX; exec $B attach -t pitwall-idle"
+$WATCH -f /dev/null new-session -d -x 100 -y 25 "unset TMUX; TERM=xterm-256color exec $B attach -t pitwall-idle"
 i=0
 while [ -z "$($B list-clients -F '#{client_name}')" ] && [ "$i" -lt 40 ]; do sleep .1; i=$((i + 1)); done
 $B send-keys -t "$INPUT" -l d
@@ -1380,7 +1380,7 @@ while [ "$($B display -p -t '=draft:' '#{@pitwall_managed_bucket}' 2>/dev/null)"
 eq "closing an empty managed workspace brings back its slot" "$($B display -p -t '=draft:' '#{@pitwall_managed_bucket}')" draft
 preview_hook PermissionRequest
 until_workspace needs-you
-$WATCH -f /dev/null new-session -d -x 140 -y 25 "unset TMUX; exec $B attach -t needs-you"
+$WATCH -f /dev/null new-session -d -x 140 -y 25 "unset TMUX; TERM=xterm-256color exec $B attach -t needs-you"
 i=0
 while [ -z "$($B list-clients -F '#{client_name}')" ] && [ "$i" -lt 40 ]; do sleep .1; i=$((i + 1)); done
 bar=$($B display -p -c "$($B list-clients -F '#{client_name}')" '#{E:@pitwall-tabs-fmt}')
