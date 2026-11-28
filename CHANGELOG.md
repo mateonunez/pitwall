@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/mateonunez/pitwall/compare/v0.2.3...v0.2.4) (2026-11-28)
+
+
+### Features
+
+* preview Automanaged workspaces and dashboard settings ([39af832](https://github.com/mateonunez/pitwall/commit/39af8329e25fa2d9d8d9e7870f4576ea93113f51))
+
 ## [0.2.3](https://github.com/mateonunez/pitwall/compare/v0.2.2...v0.2.3) (2026-11-27)
 
 
